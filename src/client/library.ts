@@ -15,6 +15,7 @@ export type LibraryOptions = {
   onPreview: () => void;
   onToast: (message: string, kind?: ToastKind) => void;
   onOpenLightbox?: (rel: string, getVisibleFiles: () => ScannedFile[]) => void;
+  onCompareFile?: (rel: string) => void;
 };
 
 export type LibraryController = {
@@ -167,8 +168,7 @@ export function createLibrary(opts: LibraryOptions): LibraryController {
     name.textContent = file.name;
     name.title = file.rel;
     name.addEventListener("click", () => {
-      check.checked = !check.checked;
-      setFileSelected(file, check.checked);
+      opts.onOpenLightbox?.(file.rel, allFiles);
     });
 
     const size = document.createElement("span");
@@ -181,33 +181,18 @@ export function createLibrary(opts: LibraryOptions): LibraryController {
 
     const pills = document.createElement("span");
     pills.className = "tree-pills";
-    const keep = document.createElement("button");
-    keep.type = "button";
-    keep.className = "tree-pill" + (included ? " on" : "");
-    keep.textContent = "Keep";
-    keep.title = "Include this file in the conversion plan";
-    keep.setAttribute("aria-pressed", String(included));
-    keep.addEventListener("click", (event) => {
-      event.stopPropagation();
-      if (!check.checked) {
-        check.checked = true;
-        setFileSelected(file, true);
-      }
-    });
-    const skip = document.createElement("button");
-    skip.type = "button";
-    skip.className = "tree-pill" + (included ? "" : " on");
-    skip.textContent = "Skip";
-    skip.title = "Leave this file out of the conversion plan";
-    skip.setAttribute("aria-pressed", String(!included));
-    skip.addEventListener("click", (event) => {
-      event.stopPropagation();
-      if (check.checked) {
-        check.checked = false;
-        setFileSelected(file, false);
-      }
-    });
-    pills.append(keep, skip);
+    if (file.category !== "other") {
+      const compare = document.createElement("button");
+      compare.type = "button";
+      compare.className = "tree-pill";
+      compare.textContent = "Compare";
+      compare.title = "Inspect quality ladder for this file";
+      compare.addEventListener("click", (event) => {
+        event.stopPropagation();
+        opts.onCompareFile?.(file.rel);
+      });
+      pills.append(compare);
+    }
 
     row.append(check, spacer, thumb(file), text, pills);
 

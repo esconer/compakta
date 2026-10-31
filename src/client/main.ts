@@ -445,7 +445,7 @@ const clearDestError = (): void => {
   node.textContent = "";
 };
 
-const applySource = async (): Promise<void> => {
+const applySource = async (silent = false): Promise<void> => {
   const source = input("sourceRoot").value.trim();
   const previousSource = state.status?.sourceRoot ?? "";
   if (!source) {
@@ -496,7 +496,9 @@ const applySource = async (): Promise<void> => {
     state.preview = null;
     updateChrome();
     await refreshPreview();
-    toast(`Scanned ${scan.totals.count.toLocaleString()} files in ${(scan.durationMs / 1000).toFixed(1)}s.`, "success");
+    if (!silent) {
+      toast(`Scanned ${scan.totals.count.toLocaleString()} files in ${(scan.durationMs / 1000).toFixed(1)}s.`, "success");
+    }
     if (scan.riskyNames.length) {
       showSourceError(
         `${scan.riskyNames.length} folder name(s) can break copied paths: ${scan.riskyNames.slice(0, 2).map((entry) => entry.rel).join(", ")}. Using a non-standard slash character.`,
@@ -1651,6 +1653,12 @@ const boot = async (): Promise<void> => {
       const scan = await api<ScanResult>("scan", { method: "POST", body: {} });
       library.setScan(scan, false);
       await refreshPreview();
+    } else if (status.sourceRoot) {
+      // A saved library that has not been scanned yet: build the tree now so
+      // the app opens ready to work. This runs once, after the shell is wired.
+      plan.render();
+      updateChrome();
+      void applySource(true);
     } else {
       plan.render();
       updateChrome();
@@ -1687,6 +1695,7 @@ library = createLibrary({
   onPreview: () => schedulePreview(),
   onToast: (message, kind) => toast(message, kind),
   onOpenLightbox: (rel, getFiles) => lightbox.open(rel, getFiles),
+  onCompareFile: (rel) => compareView.open(rel),
 });
 
 lightbox = createLightbox(() => library.allFiles());
@@ -1742,6 +1751,14 @@ runLifecycle = createRunLifecycle({
 });
 
 $("btnPickSource").addEventListener("click", () => void pickFolder("source"));
+$("libraryPill").addEventListener("click", () => {
+  if (state.status?.canPickFolder === false) {
+    input("sourceRoot").focus();
+    input("sourceRoot").select();
+    return;
+  }
+  void pickFolder("source");
+});
 $("btnPick").addEventListener("click", () => void pickFolder("destination"));
 $("btnScan").addEventListener("click", () => void applySource());
 $("sourceRoot").addEventListener("keydown", (event) => {

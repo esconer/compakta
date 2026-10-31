@@ -1,5 +1,5 @@
 /* ==========================================================================
-   premium.css — Flagship design system: ambient aurora motion, cursor-tracked
+   premium.css - Flagship design system: ambient aurora tint, cursor-tracked
    specular glassmorphism, generous whitespace, staggered spring animations,
    conversion-focused hero polish, and responsive breakpoints.
    ========================================================================== */
@@ -40,6 +40,14 @@
   isolation: isolate;
 }
 
+/* Static ambient tint when in Videos mode */
+.app[data-media-mode="video"] {
+  background:
+    radial-gradient(1100px 520px at 78% -12%, color-mix(in srgb, var(--violet) 11%, transparent), transparent 65%),
+    radial-gradient(800px 400px at 18% -15%, color-mix(in srgb, var(--accent-2) 7%, transparent), transparent 60%),
+    var(--surface-canvas);
+}
+
 .app::before,
 .app::after {
   content: "";
@@ -50,7 +58,6 @@
   filter: blur(90px);
   opacity: 0.45;
   transition: background 800ms var(--ease-spring), transform 800ms var(--ease-spring);
-  animation: aurora-drift 22s ease-in-out infinite alternate;
 }
 
 .app::before {
@@ -67,7 +74,6 @@
   width: 560px;
   height: 380px;
   background: radial-gradient(circle, color-mix(in srgb, var(--accent-2) 18%, transparent) 0%, transparent 70%);
-  animation-delay: -11s;
 }
 
 /* Shift ambient light signature when in Videos mode */
@@ -78,12 +84,6 @@
 
 .app[data-media-mode="video"]::after {
   background: radial-gradient(circle, color-mix(in srgb, var(--action-primary) 24%, transparent) 0%, transparent 70%);
-}
-
-@keyframes aurora-drift {
-  0% { transform: translate3d(0, 0, 0) scale(1); }
-  50% { transform: translate3d(-30px, 18px, 0) scale(1.06); }
-  100% { transform: translate3d(24px, -14px, 0) scale(0.96); }
 }
 
 /* ── 2. Clean Typography & Optical Hierarchy ───────────────────────────── */
@@ -223,6 +223,24 @@ body {
     box-shadow 220ms var(--ease-standard);
 }
 
+/* Cards outside the Plan pane keep the same raised surface */
+.result-box,
+.health-check,
+.result-card {
+  background: var(--card-surface);
+  border-color: color-mix(in srgb, var(--border-default) 70%, transparent);
+  box-shadow: var(--specular-inset);
+  transition:
+    transform 220ms var(--ease-spring),
+    border-color 220ms var(--ease-standard),
+    box-shadow 220ms var(--ease-standard);
+}
+
+.stat.tile:hover {
+  border-color: var(--border-strong);
+  transform: translateY(-1px);
+}
+
 /* Dynamic radial spotlight following cursor (--mouse-x, --mouse-y) */
 .format-card::before,
 .stat.tile::before,
@@ -278,11 +296,19 @@ body {
     0 12px 28px -6px color-mix(in srgb, var(--action-primary) 25%, transparent);
 }
 
-/* Pre-flight pill buttons with visible icons & spring lift */
+/* Pre-flight buttons: 2x2 grid with the status line under the label */
+.preflight {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .preflight-tile {
-  flex-direction: row;
-  justify-content: flex-start;
-  gap: 9px;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  align-items: center;
+  justify-items: start;
+  column-gap: 9px;
+  row-gap: 1px;
   min-height: 48px;
   padding: 8px 12px;
   border-radius: 12px;
@@ -291,9 +317,27 @@ body {
 
 .preflight-tile svg {
   display: block;
-  flex: 0 0 auto;
+  grid-row: 1 / span 2;
   color: var(--action-primary);
   transition: transform 220ms var(--ease-spring);
+}
+
+.preflight-tile span {
+  grid-column: 2;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.preflight-tile small {
+  grid-column: 2;
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .preflight-tile:hover:not(:disabled) {
@@ -339,6 +383,11 @@ body {
   transform: scale(1.05);
 }
 
+.hero-delta[data-tone="bad"] {
+  background: var(--status-warning-soft);
+  border-color: color-mix(in srgb, var(--status-warning) 30%, transparent);
+}
+
 .hero-meter {
   height: 8px;
   border-radius: var(--radius-pill);
@@ -356,7 +405,7 @@ body {
   transition: transform 420ms var(--ease-spring);
 }
 
-/* Primary Conversion CTA Button with Subtle Ambient Shimmer */
+/* Primary Conversion CTA Button */
 .plan-cta {
   padding: 14px 18px 13px;
   background: var(--surface-acrylic);
@@ -378,29 +427,6 @@ body {
     background 200ms ease;
 }
 
-.plan-cta #btnStart:not(:disabled)::after {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: -120%;
-  width: 65%;
-  height: 100%;
-  background: linear-gradient(
-    90deg,
-    transparent,
-    rgba(255, 255, 255, 0.22),
-    transparent
-  );
-  transform: skewX(-22deg);
-  animation: cta-shimmer 6s ease-in-out infinite;
-  pointer-events: none;
-}
-
-@keyframes cta-shimmer {
-  0%, 72% { left: -120%; }
-  100% { left: 160%; }
-}
-
 .plan-cta #btnStart:hover:not(:disabled) {
   transform: translateY(-1.5px);
   box-shadow:
@@ -412,7 +438,7 @@ body {
   transform: translateY(0) scale(0.99);
 }
 
-/* ── 7. Staggered Entrances & Scroll-Reveal Animations ─────────────────── */
+/* ── 7. Staggered Entrances ─────────────────────────────────────────────── */
 @keyframes item-reveal {
   from {
     opacity: 0;
@@ -430,38 +456,12 @@ body {
   animation-delay: calc(var(--stagger-i, 0) * 38ms);
 }
 
-.reveal-on-scroll {
-  opacity: 0;
-  transform: translateY(10px);
-  transition:
-    opacity 360ms var(--ease-spring),
-    transform 360ms var(--ease-spring);
-}
-
-.reveal-on-scroll.is-visible {
-  opacity: 1;
-  transform: translateY(0);
-}
-
-/* ── 8. Quiet-Until-Hovered Tree & Bento Recipe Grid ───────────────────── */
+/* ── 8. Library Tree & Bento Recipe Grid ───────────────────────────────── */
 .tree-row {
   border-radius: 8px;
   margin: 1px 8px;
   padding-right: 10px;
   transition: background 140ms ease, transform 140ms ease;
-}
-
-.tree-row .tree-pills {
-  opacity: 0;
-  transform: translateX(4px);
-  transition: opacity 150ms ease, transform 150ms var(--ease-spring);
-}
-
-.tree-row:hover .tree-pills,
-.tree-row:focus-within .tree-pills,
-.tree-row.excluded .tree-pills {
-  opacity: 1;
-  transform: translateX(0);
 }
 
 .bento-grid-2 {
@@ -544,12 +544,6 @@ details.tinker-drawer[open] > summary::after {
 }
 
 /* ── 9. Full Responsiveness (Tablet / Narrow Window Adaptation) ────────── */
-@media (max-width: 1120px) {
-  .preflight {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
 @media (max-width: 920px) {
   .workspace {
     grid-template-columns: 1fr !important;

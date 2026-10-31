@@ -759,8 +759,7 @@ function createLibrary(opts) {
     name.textContent = file.name;
     name.title = file.rel;
     name.addEventListener("click", () => {
-      check.checked = !check.checked;
-      setFileSelected(file, check.checked);
+      opts.onOpenLightbox?.(file.rel, allFiles);
     });
     const size = document.createElement("span");
     size.className = "tree-size";
@@ -770,33 +769,18 @@ function createLibrary(opts) {
     text.append(name, size);
     const pills = document.createElement("span");
     pills.className = "tree-pills";
-    const keep = document.createElement("button");
-    keep.type = "button";
-    keep.className = "tree-pill" + (included ? " on" : "");
-    keep.textContent = "Keep";
-    keep.title = "Include this file in the conversion plan";
-    keep.setAttribute("aria-pressed", String(included));
-    keep.addEventListener("click", (event) => {
-      event.stopPropagation();
-      if (!check.checked) {
-        check.checked = true;
-        setFileSelected(file, true);
-      }
-    });
-    const skip = document.createElement("button");
-    skip.type = "button";
-    skip.className = "tree-pill" + (included ? "" : " on");
-    skip.textContent = "Skip";
-    skip.title = "Leave this file out of the conversion plan";
-    skip.setAttribute("aria-pressed", String(!included));
-    skip.addEventListener("click", (event) => {
-      event.stopPropagation();
-      if (check.checked) {
-        check.checked = false;
-        setFileSelected(file, false);
-      }
-    });
-    pills.append(keep, skip);
+    if (file.category !== "other") {
+      const compare = document.createElement("button");
+      compare.type = "button";
+      compare.className = "tree-pill";
+      compare.textContent = "Compare";
+      compare.title = "Inspect quality ladder for this file";
+      compare.addEventListener("click", (event) => {
+        event.stopPropagation();
+        opts.onCompareFile?.(file.rel);
+      });
+      pills.append(compare);
+    }
     row.append(check, spacer, thumb(file), text, pills);
     if (file.category === "raw") {
       const badge = document.createElement("span");
@@ -1393,7 +1377,6 @@ function createPlan(opts) {
         delta.textContent = "";
       for (const id of ["statConvert", "statCopy", "statSkip"])
         $(id).textContent = "–";
-      $("statOut").textContent = "–";
       $("budgetNote").textContent = "No scan yet.";
       $("budgetFill").style.transform = "scaleX(0)";
       $("budgetFill").classList.remove("over");
@@ -1423,7 +1406,6 @@ function createPlan(opts) {
     $("statConvert").textContent = p.convert.toLocaleString();
     $("statCopy").textContent = p.copy.toLocaleString();
     $("statSkip").textContent = p.skip.toLocaleString();
-    $("statOut").textContent = fmt(p.estOutputBytes);
     const budget = p.budget;
     const frac = budget.budgetBytes > 0 ? budget.totalEstBytes / budget.budgetBytes : 0;
     setWidth($("budgetFill"), frac);
@@ -1994,15 +1976,7 @@ function initMicrointeractions() {
       target.style.setProperty("--mouse-y", `${y.toFixed(0)}px`);
     }, { passive: true });
   }
-  const scrollObserver = !reducedMotion && "IntersectionObserver" in window ? new IntersectionObserver((entries, observer) => {
-    for (const entry of entries) {
-      if (entry.isIntersecting) {
-        entry.target.classList.add("is-visible");
-        observer.unobserve(entry.target);
-      }
-    }
-  }, { rootMargin: "0px 0px -12px 0px", threshold: 0.08 }) : null;
-  const applyStaggerAndReveal = () => {
+  const applyStagger = () => {
     if (state.running || state.starting)
       return;
     for (const selector of STAGGER_CONTAINERS) {
@@ -2014,17 +1988,8 @@ function initMicrointeractions() {
         child.style.setProperty("--stagger-i", String(Math.min(index, 14)));
       });
     }
-    if (scrollObserver) {
-      const scrollItems = document.querySelectorAll(".group:not(.reveal-on-scroll), .activity-row:not(.reveal-on-scroll)");
-      scrollItems.forEach((el) => {
-        if (!el.classList.contains("is-visible")) {
-          el.classList.add("reveal-on-scroll");
-          scrollObserver.observe(el);
-        }
-      });
-    }
   };
-  applyStaggerAndReveal();
+  applyStagger();
   const workspace = document.getElementById("workspace");
   if (workspace && "MutationObserver" in window) {
     let rafId = 0;
@@ -2035,7 +2000,7 @@ function initMicrointeractions() {
         return;
       rafId = window.requestAnimationFrame(() => {
         rafId = 0;
-        applyStaggerAndReveal();
+        applyStagger();
       });
     });
     mo.observe(workspace, { childList: true, subtree: true });
@@ -2399,14 +2364,16 @@ function createCompareView(actions) {
   const syncFileSelect = (rel) => {
     const select = $("compareFileSelect");
     const files = fileList();
-    if (!files.length && rel) {
-      select.innerHTML = `<option value="${escapeHtml(rel)}" selected>${escapeHtml(rel.split(/[\\/]/).pop() ?? rel)}</option>`;
+    const nameOf = (value) => value.split(/[\\/]/).pop() ?? value;
+    const inList = rel ? files.some((f) => f.rel === rel) : false;
+    const options = files.map((f) => `<option value="${escapeHtml(f.rel)}"${f.rel === rel ? " selected" : ""}>${escapeHtml(nameOf(f.rel))}</option>`).join("");
+    if (rel && !inList) {
+      select.innerHTML = `<option value="${escapeHtml(rel)}" selected>${escapeHtml(nameOf(rel))}</option>` + options;
       return;
     }
-    select.innerHTML = files.map((f) => {
-      const name = f.rel.split(/[\\/]/).pop() ?? f.rel;
-      return `<option value="${escapeHtml(f.rel)}"${f.rel === rel ? " selected" : ""}>${escapeHtml(name)}</option>`;
-    }).join("");
+    select.innerHTML = options;
+    if (rel)
+      select.value = rel;
   };
   const syncFormatSelect = (current) => {
     const select = $("compareFormatSelect");
@@ -2489,7 +2456,7 @@ function createCompareView(actions) {
     const variant = data.variants[Math.min(state.compareVariant, data.variants.length - 1)];
     const applyBtn = document.getElementById("btnCompareApply");
     if (applyBtn && variant) {
-      applyBtn.textContent = `[ Use q${variant.quality} ]`;
+      applyBtn.textContent = `Use q${variant.quality}`;
     }
     const footnote = document.getElementById("compareFootnote");
     if (footnote && variant) {
@@ -2549,14 +2516,6 @@ function createCompareView(actions) {
           <span class="badge-title">${escapeHtml(formatLabel)} q${variant.quality}</span>
           <span class="badge-sub">${fmt(variant.bytes)} (${savingText})</span>
         </div>
-        ${split > 22 ? `<div class="frosted-badge stage-badge-mid-left">
-                 <span class="badge-title">ORIGINAL</span>
-                 <span class="badge-sub">${fmt(data.originalBytes)}</span>
-               </div>` : ""}
-        ${split < 78 ? `<div class="frosted-badge stage-badge-mid-right">
-                 <span class="badge-title">${escapeHtml(formatLabel)} q${variant.quality}</span>
-                 <span class="badge-sub">${fmt(variant.bytes)} (${savingText})</span>
-               </div>` : ""}
       `;
     } else if (state.compareMode === "side") {
       stageHtml += `
@@ -2655,16 +2614,6 @@ function createCompareView(actions) {
     const variantPane = stage.querySelector(".compare-pane.variant");
     if (variantPane) {
       variantPane.style.clipPath = `inset(0 0 0 ${split}%)`;
-    }
-    const midLeft = stage.querySelector(".stage-badge-mid-left");
-    if (midLeft) {
-      midLeft.style.left = `calc(${split}% - 165px)`;
-      midLeft.style.display = split > 22 ? "" : "none";
-    }
-    const midRight = stage.querySelector(".stage-badge-mid-right");
-    if (midRight) {
-      midRight.style.left = `calc(${split}% + 40px)`;
-      midRight.style.display = split < 78 ? "" : "none";
     }
   };
   const setupSplitterEvents = (stage) => {
@@ -2809,14 +2758,14 @@ function createCompareView(actions) {
     actions.switchView("compare");
     activeFormat = state.currentFormat;
     const files = fileList();
-    if (!files.length) {
+    const wanted = rel ?? state.compareRel;
+    const chosen = rel ?? (wanted && files.some((f) => f.rel === wanted) ? wanted : files[0]?.rel);
+    if (!chosen) {
       renderEmpty("No selected files to compare", "Select at least one image in the Library, then open Compare again.");
       $("compareViewTitle").textContent = "Compare";
       $("compareFormat").textContent = state.formatSpecs[state.currentFormat]?.shortLabel ?? "—";
       return;
     }
-    const wanted = rel ?? state.compareRel;
-    const chosen = files.some((f) => f.rel === wanted) ? wanted : files[0].rel;
     syncFileSelect(chosen);
     syncFormatSelect(activeFormat);
     const zoomSlider = document.getElementById("compareZoomSlider");
@@ -3697,7 +3646,7 @@ var clearDestError = () => {
   node.className = "inline-msg hidden";
   node.textContent = "";
 };
-var applySource = async () => {
+var applySource = async (silent = false) => {
   const source = input("sourceRoot").value.trim();
   const previousSource = state.status?.sourceRoot ?? "";
   if (!source) {
@@ -3745,7 +3694,9 @@ var applySource = async () => {
     state.preview = null;
     updateChrome();
     await refreshPreview();
-    toast(`Scanned ${scan.totals.count.toLocaleString()} files in ${(scan.durationMs / 1000).toFixed(1)}s.`, "success");
+    if (!silent) {
+      toast(`Scanned ${scan.totals.count.toLocaleString()} files in ${(scan.durationMs / 1000).toFixed(1)}s.`, "success");
+    }
     if (scan.riskyNames.length) {
       showSourceError(`${scan.riskyNames.length} folder name(s) can break copied paths: ${scan.riskyNames.slice(0, 2).map((entry) => entry.rel).join(", ")}. Using a non-standard slash character.`, "warn");
     }
@@ -4665,6 +4616,10 @@ var boot = async () => {
       const scan = await api("scan", { method: "POST", body: {} });
       library.setScan(scan, false);
       await refreshPreview();
+    } else if (status.sourceRoot) {
+      plan.render();
+      updateChrome();
+      applySource(true);
     } else {
       plan.render();
       updateChrome();
@@ -4693,7 +4648,8 @@ library = createLibrary({
   onChange: () => updateChrome(),
   onPreview: () => schedulePreview(),
   onToast: (message, kind) => toast(message, kind),
-  onOpenLightbox: (rel, getFiles) => lightbox.open(rel, getFiles)
+  onOpenLightbox: (rel, getFiles) => lightbox.open(rel, getFiles),
+  onCompareFile: (rel) => compareView.open(rel)
 });
 lightbox = createLightbox(() => library.allFiles());
 plan = createPlan({
@@ -4747,6 +4703,14 @@ runLifecycle = createRunLifecycle({
   lockFormat: (locked) => formatUi.lock(locked)
 });
 $("btnPickSource").addEventListener("click", () => void pickFolder("source"));
+$("libraryPill").addEventListener("click", () => {
+  if (state.status?.canPickFolder === false) {
+    input("sourceRoot").focus();
+    input("sourceRoot").select();
+    return;
+  }
+  pickFolder("source");
+});
 $("btnPick").addEventListener("click", () => void pickFolder("destination"));
 $("btnScan").addEventListener("click", () => void applySource());
 $("sourceRoot").addEventListener("keydown", (event) => {

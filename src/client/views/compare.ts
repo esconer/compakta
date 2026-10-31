@@ -7,7 +7,7 @@
  * - Floating frosted glass badges for original and encoded variant.
  * - Floating bottom canvas dock with quick Fit/100%, mode toggles, background switcher & fullscreen.
  * - Right inspector sidebar with FILE metadata, QUALITY LADDER with 5-segment meters,
- *   and glowing [ Use qXX ] / [ Set as default ] actions.
+ *   and glowing Use qXX / Set as default actions.
  */
 import { $, escapeHtml, fmt } from "../dom";
 import { state } from "../state";
@@ -41,16 +41,19 @@ export function createCompareView(actions: ViewActions): CompareViewController {
   const syncFileSelect = (rel: string | null): void => {
     const select = $<HTMLSelectElement>("compareFileSelect");
     const files = fileList();
-    if (!files.length && rel) {
-      select.innerHTML = `<option value="${escapeHtml(rel)}" selected>${escapeHtml(rel.split(/[\\/]/).pop() ?? rel)}</option>`;
+    const nameOf = (value: string): string => value.split(/[\\/]/).pop() ?? value;
+    const inList = rel ? files.some((f) => f.rel === rel) : false;
+    const options = files
+      .map((f) => `<option value="${escapeHtml(f.rel)}"${f.rel === rel ? " selected" : ""}>${escapeHtml(nameOf(f.rel))}</option>`)
+      .join("");
+    if (rel && !inList) {
+      // A per-file Compare action can open a file that is not selected.
+      select.innerHTML =
+        `<option value="${escapeHtml(rel)}" selected>${escapeHtml(nameOf(rel))}</option>` + options;
       return;
     }
-    select.innerHTML = files
-      .map((f) => {
-        const name = f.rel.split(/[\\/]/).pop() ?? f.rel;
-        return `<option value="${escapeHtml(f.rel)}"${f.rel === rel ? " selected" : ""}>${escapeHtml(name)}</option>`;
-      })
-      .join("");
+    select.innerHTML = options;
+    if (rel) select.value = rel;
   };
 
   const syncFormatSelect = (current: OutputFormat): void => {
@@ -149,7 +152,7 @@ export function createCompareView(actions: ViewActions): CompareViewController {
     const variant = data.variants[Math.min(state.compareVariant, data.variants.length - 1)];
     const applyBtn = document.getElementById("btnCompareApply");
     if (applyBtn && variant) {
-      applyBtn.textContent = `[ Use q${variant.quality} ]`;
+      applyBtn.textContent = `Use q${variant.quality}`;
     }
 
     const footnote = document.getElementById("compareFootnote");
@@ -224,22 +227,6 @@ export function createCompareView(actions: ViewActions): CompareViewController {
           <span class="badge-title">${escapeHtml(formatLabel)} q${variant.quality}</span>
           <span class="badge-sub">${fmt(variant.bytes)} (${savingText})</span>
         </div>
-        ${
-          split > 22
-            ? `<div class="frosted-badge stage-badge-mid-left">
-                 <span class="badge-title">ORIGINAL</span>
-                 <span class="badge-sub">${fmt(data.originalBytes)}</span>
-               </div>`
-            : ""
-        }
-        ${
-          split < 78
-            ? `<div class="frosted-badge stage-badge-mid-right">
-                 <span class="badge-title">${escapeHtml(formatLabel)} q${variant.quality}</span>
-                 <span class="badge-sub">${fmt(variant.bytes)} (${savingText})</span>
-               </div>`
-            : ""
-        }
       `;
     } else if (state.compareMode === "side") {
       stageHtml += `
@@ -354,17 +341,6 @@ export function createCompareView(actions: ViewActions): CompareViewController {
     const variantPane = stage.querySelector<HTMLElement>(".compare-pane.variant");
     if (variantPane) {
       variantPane.style.clipPath = `inset(0 0 0 ${split}%)`;
-    }
-
-    const midLeft = stage.querySelector<HTMLElement>(".stage-badge-mid-left");
-    if (midLeft) {
-      midLeft.style.left = `calc(${split}% - 165px)`;
-      midLeft.style.display = split > 22 ? "" : "none";
-    }
-    const midRight = stage.querySelector<HTMLElement>(".stage-badge-mid-right");
-    if (midRight) {
-      midRight.style.left = `calc(${split}% + 40px)`;
-      midRight.style.display = split < 78 ? "" : "none";
     }
   };
 
@@ -531,7 +507,11 @@ export function createCompareView(actions: ViewActions): CompareViewController {
     actions.switchView("compare");
     activeFormat = state.currentFormat;
     const files = fileList();
-    if (!files.length) {
+    const wanted = rel ?? state.compareRel;
+    const chosen =
+      rel ??
+      (wanted && files.some((f) => f.rel === wanted) ? wanted : files[0]?.rel);
+    if (!chosen) {
       renderEmpty(
         "No selected files to compare",
         "Select at least one image in the Library, then open Compare again.",
@@ -540,8 +520,6 @@ export function createCompareView(actions: ViewActions): CompareViewController {
       $("compareFormat").textContent = state.formatSpecs[state.currentFormat]?.shortLabel ?? "—";
       return;
     }
-    const wanted = rel ?? state.compareRel;
-    const chosen = files.some((f) => f.rel === wanted) ? wanted! : files[0].rel;
     syncFileSelect(chosen);
     syncFormatSelect(activeFormat);
     const zoomSlider = document.getElementById("compareZoomSlider") as HTMLInputElement | null;

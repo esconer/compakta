@@ -185,7 +185,6 @@ export function createPlan(opts: PlanOptions): PlanController {
       const delta = document.getElementById("planHeroDelta");
       if (delta) delta.textContent = "";
       for (const id of ["statConvert", "statCopy", "statSkip"]) $(id).textContent = "–";
-      $("statOut").textContent = "–";
       $("budgetNote").textContent = "No scan yet.";
       $("budgetFill").style.transform = "scaleX(0)";
       $("budgetFill").classList.remove("over");
@@ -219,7 +218,6 @@ export function createPlan(opts: PlanOptions): PlanController {
     $("statConvert").textContent = p.convert.toLocaleString();
     $("statCopy").textContent = p.copy.toLocaleString();
     $("statSkip").textContent = p.skip.toLocaleString();
-    $("statOut").textContent = fmt(p.estOutputBytes);
 
     const budget = p.budget;
     const frac = budget.budgetBytes > 0 ? budget.totalEstBytes / budget.budgetBytes : 0;

@@ -732,10 +732,18 @@ src/
   version.ts      version parsing shared by discovery and updates
 public/
   index.html      layout
-  app.js          UI wiring
-  treelogic.js    pure tree logic
-  formatlogic.js  pure destination-suffix logic
-  style.css       styling and theme palettes
+  app.js          generated client bundle (bun run build:client)
+  favicon.ico     window and tab icon
+  icon.png        raster app icon
+  icon.svg        vector app mark
+  css/
+    tokens.css      design tokens: colour, size, shape, motion
+    themes.css      Midnight / Ink / Daylight palettes
+    base.css        reset, document defaults, focus, scrollbars
+    layout.css      shell, identity bar, rail, panes, dialogs, toasts
+    components.css  buttons, fields, cards, format grid, tree, tables
+    views.css       Plan, Run, Compare, Runs, Health, and Audit views
+    premium.css     depth, typography, motion, and responsive polish
 assets/
   icon.png        Linux application icon
   icon.ico        Windows application icon

@@ -1,7 +1,7 @@
 /**
  * Premium UI microinteractions:
  * 1. Cursor-tracked spotlight coordinates (--mouse-x, --mouse-y) for cards.
- * 2. Staggered entrance indices (--stagger-i) and IntersectionObserver scroll reveals.
+ * 2. Staggered entrance indices (--stagger-i) for dynamic card lists.
  * 3. Responsive narrow-viewport pane switching synced with the Context Rail.
  */
 
@@ -38,23 +38,8 @@ export function initMicrointeractions(): void {
     );
   }
 
-  // 2. IntersectionObserver for scroll-reveal elements inside scrollable panes
-  const scrollObserver =
-    !reducedMotion && "IntersectionObserver" in window
-      ? new IntersectionObserver(
-          (entries, observer) => {
-            for (const entry of entries) {
-              if (entry.isIntersecting) {
-                entry.target.classList.add("is-visible");
-                observer.unobserve(entry.target);
-              }
-            }
-          },
-          { rootMargin: "0px 0px -12px 0px", threshold: 0.08 },
-        )
-      : null;
-
-  const applyStaggerAndReveal = (): void => {
+  // 2. Staggered entrance indices for dynamic card lists
+  const applyStagger = (): void => {
     if (state.running || state.starting) return;
     for (const selector of STAGGER_CONTAINERS) {
       const container = document.querySelector<HTMLElement>(selector);
@@ -64,21 +49,9 @@ export function initMicrointeractions(): void {
         child.style.setProperty("--stagger-i", String(Math.min(index, 14)));
       });
     }
-
-    if (scrollObserver) {
-      const scrollItems = document.querySelectorAll<HTMLElement>(
-        ".group:not(.reveal-on-scroll), .activity-row:not(.reveal-on-scroll)",
-      );
-      scrollItems.forEach((el) => {
-        if (!el.classList.contains("is-visible")) {
-          el.classList.add("reveal-on-scroll");
-          scrollObserver.observe(el);
-        }
-      });
-    }
   };
 
-  applyStaggerAndReveal();
+  applyStagger();
 
   // Re-apply stagger indices whenever dynamic lists re-render
   const workspace = document.getElementById("workspace");
@@ -89,7 +62,7 @@ export function initMicrointeractions(): void {
       if (rafId) return;
       rafId = window.requestAnimationFrame(() => {
         rafId = 0;
-        applyStaggerAndReveal();
+        applyStagger();
       });
     });
     mo.observe(workspace, { childList: true, subtree: true });

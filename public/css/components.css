@@ -465,6 +465,7 @@ input[type="range"]:disabled { opacity: .4; cursor: not-allowed; }
   font-size: var(--fs-2xs);
 }
 .range-mid { color: var(--text-secondary); text-align: center; }
+.range-ends + .segmented { margin-top: 8px; }
 
 /* ───────────────────────────────── meter ──────────────────────────────── */
 .meter {
@@ -489,7 +490,7 @@ input[type="range"]:disabled { opacity: .4; cursor: not-allowed; }
 /* ──────────────────────────────── stat tiles ──────────────────────────── */
 .stat-row {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
 }
 .stat.tile {
@@ -578,33 +579,36 @@ input[type="range"]:disabled { opacity: .4; cursor: not-allowed; }
 /* ───────────────────────────── pre-flight tiles ───────────────────────── */
 .preflight {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
 .preflight-tile {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  grid-template-rows: auto auto;
   align-items: center;
-  justify-content: center;
-  gap: 2px;
-  min-height: 44px;
-  padding: 6px 8px;
+  justify-items: start;
+  column-gap: 9px;
+  row-gap: 1px;
+  min-height: 48px;
+  padding: 8px 12px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-md);
   background: var(--surface-raised);
   color: var(--text-primary);
-  text-align: center;
+  text-align: left;
   transition: border-color var(--duration-fast) var(--ease-standard), background var(--duration-fast) var(--ease-standard), transform var(--duration-fast) var(--ease-standard);
 }
 .preflight-tile:hover { border-color: var(--border-strong); background: var(--surface-hover); transform: translateY(-1px); }
 .preflight-tile:disabled { opacity: .45; pointer-events: none; }
-.preflight-tile svg { display: none; }
-.preflight-tile span { font-size: var(--fs-xs); font-weight: 600; }
+.preflight-tile svg { display: block; grid-row: 1 / span 2; }
+.preflight-tile span { grid-column: 2; font-size: var(--fs-xs); font-weight: 600; white-space: nowrap; }
 .preflight-tile small {
+  grid-column: 2;
   max-width: 100%;
   overflow: hidden;
   color: var(--text-tertiary);
-  font-size: 9px;
+  font-size: var(--fs-2xs);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -805,12 +809,6 @@ button.tree-name:hover { color: var(--action-primary); }
   transition: color var(--duration-fast), border-color var(--duration-fast), background var(--duration-fast);
 }
 .tree-pill:hover { border-color: var(--border-strong); color: var(--text-secondary); }
-.tree-pill.on {
-  border-color: color-mix(in srgb, var(--action-primary) 54%, transparent);
-  background: linear-gradient(180deg, color-mix(in srgb, var(--action-primary) 26%, var(--surface-raised)), color-mix(in srgb, var(--action-primary) 12%, var(--surface-raised)));
-  color: color-mix(in srgb, var(--action-primary) 40%, var(--text-primary));
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--action-primary) 12%, transparent);
-}
 .tree-size {
   flex: 0 0 auto;
   color: var(--text-tertiary);
@@ -992,6 +990,41 @@ button.tree-name:hover { color: var(--action-primary); }
 .kv dt { color: var(--text-tertiary); }
 .kv dd { color: var(--text-primary); overflow-wrap: anywhere; }
 .kv dd.mono { font-size: var(--fs-2xs); }
+
+/* Two-column label/value lists used by About, update, ImageMagick, and Health */
+.fact-list {
+  display: flex;
+  flex-direction: column;
+  margin: 12px 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--surface-raised) 60%, transparent);
+  overflow: hidden;
+}
+.fact-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-5);
+  min-width: 0;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: var(--fs-xs);
+}
+.fact-row:last-child { border-bottom: 0; }
+.fact-row > span:first-child {
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+}
+.fact-row > span:last-child {
+  min-width: 0;
+  color: var(--text-primary);
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fact-row .mono { font-family: var(--font-mono); font-size: var(--fs-2xs); }
 
 /* ────────────────────────────── about / splash ────────────────────────── */
 .about-hero {

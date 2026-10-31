@@ -200,6 +200,12 @@
   border-radius: 10px 0 0 10px;
   clip-path: polygon(0 0, calc(100% - 14px) 0, 100% 50%, calc(100% - 14px) 100%, 0 100%);
 }
+.rail-step:last-child {
+  padding-right: 20px;
+  border-radius: 0 10px 10px 0;
+  clip-path: polygon(0 0, 100% 0, 100% 100%, 0 100%, 14px 50%);
+}
+.rail-step:last-child[data-state="current"]::after { right: 20px; }
 .rail-step:not(:first-child) { margin-left: -12px; }
 .rail-step:hover { z-index: 2; background: var(--surface-hover); color: var(--text-primary); }
 .rail-step[data-state="current"] {
@@ -213,11 +219,12 @@
   position: absolute;
   right: 13px;
   bottom: 0;
-  left: 27px;
+  left: 30px;
   height: 2px;
   border-radius: 2px;
   background: var(--accent-gradient);
 }
+.rail-step:first-child[data-state="current"]::after { left: 20px; }
 .rail-step[data-state="done"] .rail-icon {
   border-color: transparent;
   background: transparent;
@@ -256,6 +263,15 @@
 }
 .rail-step[data-state="current"] .rail-meta { color: var(--text-secondary); }
 .rail-sep { display: none; }
+
+/* The three panes are visible side by side above this width, so the wizard
+   rail is redundant. It is kept on narrow screens where it switches panes. */
+@media (min-width: 921px) {
+  .app {
+    grid-template-rows: var(--h-identity) minmax(0, 1fr) var(--h-status);
+  }
+  .rail { display: none; }
+}
 
 /* ──────────────────────────────── workspace ───────────────────────────── */
 .workspace {
@@ -312,7 +328,7 @@
 .pane-resizer:focus-visible::after,
 .pane-resizer.is-active::after {
   background: var(--action-primary);
-  box-shadow: 0 0 8px var(--accent-glow);
+  box-shadow: 0 0 8px var(--glow);
 }
 
 body.is-resizing,
