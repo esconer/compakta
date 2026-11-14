@@ -4,7 +4,8 @@
  * lossless PNG frame extraction for the visual Compare inspector.
  */
 import { spawn } from "node:child_process";
-import { stat } from "node:fs/promises";
+import { rename, rm, stat } from "node:fs/promises";
+import path from "node:path";
 import type { FileResult } from "../convert.ts";
 import { runPool } from "../convert.ts";
 import { dateFromName, type DateReport } from "../meta.ts";
@@ -71,6 +72,7 @@ export function probeVideo(
   file: string,
   mtime?: number,
   size?: number,
+  signal?: AbortSignal,
 ): Promise<VideoFacts> {
   const cacheKey = mtime != null && size != null ? `${file}:${mtime}:${size}` : null;
   if (cacheKey) {
@@ -79,6 +81,10 @@ export function probeVideo(
   }
 
   return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve({ path: file, ok: false, error: "aborted" });
+      return;
+    }
     const child = spawn(
       ffprobePath,
       [
@@ -93,6 +99,16 @@ export function probeVideo(
       { windowsHide: true },
     );
 
+    const killChild = () => {
+      try {
+        child.kill();
+      } catch {
+        /* ignore */
+      }
+    };
+    const timer = setTimeout(killChild, 15_000);
+    signal?.addEventListener("abort", killChild, { once: true });
+
     let out = "";
     let err = "";
     child.stdout.on("data", (d) => {
@@ -102,11 +118,15 @@ export function probeVideo(
       if (err.length < 4_000) err += String(d);
     });
 
-    child.on("error", (e) =>
-      resolve({ path: file, ok: false, error: String(e.message ?? e) }),
-    );
+    child.on("error", (e) => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", killChild);
+      resolve({ path: file, ok: false, error: String(e.message ?? e) });
+    });
 
     child.on("close", (code) => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", killChild);
       if (code !== 0 || !out.trim()) {
         resolve({
           path: file,
@@ -202,7 +222,7 @@ export async function probeManyVideos(
     Array.from({ length: Math.max(1, Math.min(jobs, files.length || 1)) }, async () => {
       while (cursor < files.length && !signal?.aborted) {
         const f = files[cursor++];
-        out.push(await probeVideo(ffprobePath, f.abs, f.mtime, f.size));
+        out.push(await probeVideo(ffprobePath, f.abs, f.mtime, f.size, signal));
       }
     }),
   );
@@ -241,8 +261,17 @@ export function extractVideoFramePng(
   videoFile: string,
   timestampSec: number,
   outPngPath: string,
+  signal?: AbortSignal,
 ): Promise<boolean> {
   return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve(false);
+      return;
+    }
+    const partPath = path.join(
+      path.dirname(outPngPath),
+      `part-${process.pid}-${Date.now()}-${path.basename(outPngPath)}`,
+    );
     const args: string[] = ["-hide_banner", "-nostdin", "-y"];
     if (timestampSec > 0) {
       args.push("-ss", timestampSec.toFixed(3));
@@ -254,20 +283,46 @@ export function extractVideoFramePng(
       "1",
       "-pix_fmt",
       "rgb24",
-      outPngPath,
+      partPath,
     );
 
     const child = spawn(ffmpegPath, args, { windowsHide: true, stdio: "ignore" });
-    child.on("error", () => resolve(false));
+    const killChild = () => {
+      try {
+        child.kill();
+      } catch {
+        /* ignore */
+      }
+    };
+    const timer = setTimeout(killChild, 20_000);
+    signal?.addEventListener("abort", killChild, { once: true });
+
+    child.on("error", async () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", killChild);
+      await rm(partPath, { force: true }).catch(() => {});
+      resolve(false);
+    });
+
     child.on("close", async (code) => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", killChild);
       if (code !== 0) {
+        await rm(partPath, { force: true }).catch(() => {});
         resolve(false);
         return;
       }
       try {
-        const st = await stat(outPngPath);
-        resolve(st.size > 0);
+        const st = await stat(partPath);
+        if (st.size > 0) {
+          await rename(partPath, outPngPath);
+          resolve(true);
+        } else {
+          await rm(partPath, { force: true }).catch(() => {});
+          resolve(false);
+        }
       } catch {
+        await rm(partPath, { force: true }).catch(() => {});
         resolve(false);
       }
     });

@@ -3,6 +3,7 @@
  */
 import { access, stat } from "node:fs/promises";
 import { constants } from "node:fs";
+import path from "node:path";
 import type { HealthCheck } from "../health.ts";
 import { freeSpace } from "../paths.ts";
 import { findFfmpeg, type FfmpegInfo } from "./ffmpeg.ts";
@@ -83,11 +84,29 @@ export async function runVideoHealthCheck(
       detail: effectiveDestination,
     });
   } catch (err) {
+    let ancestor = path.dirname(path.resolve(effectiveDestination));
+    while (ancestor && ancestor !== path.dirname(ancestor)) {
+      try {
+        await stat(ancestor);
+        break;
+      } catch {
+        ancestor = path.dirname(ancestor);
+      }
+    }
+    let parentWritable = false;
+    try {
+      await access(ancestor, constants.W_OK);
+      parentWritable = true;
+    } catch {
+      // not writable
+    }
     checks.push({
       id: "dest",
       label: "Output writable",
-      status: "warn",
-      detail: `${effectiveDestination} - will be created (${(err as Error).message.slice(0, 60)})`,
+      status: parentWritable ? "warn" : "fail",
+      detail: parentWritable
+        ? `${effectiveDestination} - will be created (${(err as Error).message.slice(0, 60)})`
+        : `${effectiveDestination} - parent folder "${ancestor}" is not writable`,
     });
   }
 

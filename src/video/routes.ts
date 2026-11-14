@@ -7,7 +7,7 @@
  */
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, rm, stat } from "node:fs/promises";
+import { mkdir, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 
 import { planBudget, type BudgetPlan } from "../budget.ts";
@@ -252,7 +252,7 @@ export async function handleVideoApi(
     if (rawDest !== undefined && rawDest !== "") {
       vState.customDestination = nextCustom;
     }
-    if (typeof body.budgetBytes === "number") {
+    if (typeof body.budgetBytes === "number" && Number.isFinite(body.budgetBytes) && body.budgetBytes > 0) {
       bridge.setBudgetBytes(body.budgetBytes);
     }
 
@@ -288,6 +288,7 @@ export async function handleVideoApi(
       vState.customDestination = rawDest;
       vState.policy.destMode = "custom";
     }
+    assertDestinationSafe(bridge.getSourceRoot(), effectiveDest(bridge));
 
     const ratio = vState.ratios[vState.policy.outputFormat];
     const preview = applyVideoPolicy(scan, vState.policy, ratio);
@@ -352,6 +353,7 @@ export async function handleVideoApi(
       policy: vState.policy,
       sampleSize: Math.max(2, Math.min(body.sampleSize ?? 5, 12)),
       flatRatio: vState.ratios[format],
+      signal: req.signal,
     });
 
     if (est.method === "sampled" && est.sampleSize > 0) {
@@ -378,6 +380,7 @@ export async function handleVideoApi(
       vState.customDestination = rawDest;
       vState.policy.destMode = "custom";
     }
+    assertDestinationSafe(bridge.getSourceRoot(), effectiveDest(bridge));
 
     const preview = applyVideoPolicy(
       scan,
@@ -425,7 +428,7 @@ export async function handleVideoApi(
     const decisions = [...preview.convert, ...preview.copy];
     const dest = effectiveDest(bridge);
     const report = await analyseVideoSync(decisions, bridge.getSourceRoot(), dest, vState.policy);
-    const result = await cleanOrphans(dest, report.orphans);
+    const result = await cleanOrphans(dest, report.allOrphans);
     return json(result);
   }
 
@@ -474,6 +477,8 @@ export async function handleVideoApi(
       duplicateBytes: res.duplicateBytes,
       hashedFiles: res.hashedFiles,
       durationMs: res.durationMs,
+      truncated: res.truncated,
+      candidateCount: res.candidateCount,
     });
   }
 
@@ -533,7 +538,7 @@ export async function handleVideoApi(
       );
     }
 
-    const facts = await probeVideo(ff.ffprobePath, file.abs, file.mtime, file.size);
+    const facts = await probeVideo(ff.ffprobePath, file.abs, file.mtime, file.size, req.signal);
     const dur = facts.durationSec && facts.durationSec > 0 ? facts.durationSec : 6;
     const sliceDur = Math.min(1.5, dur);
     const sampleTs =
@@ -546,10 +551,12 @@ export async function handleVideoApi(
     const outDir = bridge.getPreviewCacheDir();
     await ensureDir(outDir);
 
-    const fileHash = hashRel(`${file.rel}:${file.mtime}:ts${sampleTs.toFixed(2)}`);
+    const fileHash = hashRel(
+      `${file.rel}:${file.size}:${file.mtime}:ts${sampleTs.toFixed(2)}:r${vState.policy.maxResolution}:f${vState.policy.maxFps}:g${vState.policy.filmGrain}:b${vState.policy.tenBit}`,
+    );
     const origPngName = `vcmp-orig-${fileHash}.png`;
     const origPngPath = path.join(outDir, origPngName);
-    const okOrig = await extractVideoFramePng(ff.ffmpegPath, file.abs, sampleTs, origPngPath);
+    const okOrig = await extractVideoFramePng(ff.ffmpegPath, file.abs, sampleTs, origPngPath, req.signal);
     if (!okOrig || !existsSync(origPngPath)) {
       throw new Error("Could not extract sample frame from original video.");
     }
@@ -566,15 +573,17 @@ export async function handleVideoApi(
           : null;
 
     for (const q of qualities) {
+      if (req.signal.aborted) break;
       const ext = format === "vp9" ? "webm" : vState.policy.container;
       const sliceClipName = `vcmp-clip-${fileHash}-${format}-q${q}-s${vState.policy.speed}.${ext}`;
       const sliceClipPath = path.join(outDir, sliceClipName);
       const framePngName = `vcmp-frame-${fileHash}-${format}-q${q}-s${vState.policy.speed}.png`;
       const framePngPath = path.join(outDir, framePngName);
+      const partClipPath = path.join(outDir, `part-${process.pid}-${Date.now()}-${sliceClipName}`);
 
       const args = buildVideoEncoderArgs({
         src: file.abs,
-        out: sliceClipPath,
+        out: partClipPath,
         format,
         container: vState.policy.container,
         quality: q,
@@ -596,24 +605,43 @@ export async function handleVideoApi(
 
       await new Promise<void>((resolve) => {
         const c = spawn(ff.ffmpegPath, args, { windowsHide: true, stdio: "ignore" });
-        c.on("close", () => resolve());
-        c.on("error", () => resolve());
+        const onAbort = () => {
+          try { c.kill(); } catch {}
+          resolve();
+        };
+        req.signal.addEventListener("abort", onAbort, { once: true });
+        c.on("close", () => {
+          req.signal.removeEventListener("abort", onAbort);
+          resolve();
+        });
+        c.on("error", () => {
+          req.signal.removeEventListener("abort", onAbort);
+          resolve();
+        });
       });
+
+      if (req.signal.aborted) {
+        await rm(partClipPath, { force: true }).catch(() => {});
+        break;
+      }
 
       let projectedFullBytes = 0;
       try {
-        const sliceSt = await stat(sliceClipPath);
+        const sliceSt = await stat(partClipPath);
         if (sliceSt.size === 0) {
           errors.push(`q${q}: encoder produced empty slice`);
+          await rm(partClipPath, { force: true }).catch(() => {});
           continue;
         }
         projectedFullBytes = Math.round(sliceSt.size * (dur / sliceDur));
+        await rename(partClipPath, sliceClipPath);
       } catch {
+        await rm(partClipPath, { force: true }).catch(() => {});
         errors.push(`q${q}: failed to encode sample slice`);
         continue;
       }
 
-      const okFrame = await extractVideoFramePng(ff.ffmpegPath, sliceClipPath, 0, framePngPath);
+      const okFrame = await extractVideoFramePng(ff.ffmpegPath, sliceClipPath, 0, framePngPath, req.signal);
       await rm(sliceClipPath, { force: true }).catch(() => {});
       if (!okFrame) {
         errors.push(`q${q}: could not extract preview frame`);
@@ -814,6 +842,10 @@ export async function handleVideoApi(
           }
         };
         send({ type: "hello", jobId: job.id, state: job.state });
+        if (job.lastTerminalEvent) {
+          send(job.lastTerminalEvent);
+          return;
+        }
         job.on("progress", send);
         ping = setInterval(() => {
           try {
@@ -866,6 +898,9 @@ export async function handleVideoApi(
   if (subroute.startsWith("resume/") && req.method === "POST") {
     const job = getVideoJob(subroute.slice("resume/".length));
     if (!job) throw Object.assign(new Error("Unknown video job."), { status: 404 });
+    if (job.state !== "paused") {
+      throw Object.assign(new Error(`Cannot resume from "${job.state}".`), { status: 409 });
+    }
     void job.resume();
     return json({ ok: true, state: job.state, total: job.progress().total });
   }

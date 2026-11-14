@@ -120,8 +120,13 @@ function runFfmpegWithProgress(
   onChildExit?: (pid: number) => void,
 ): Promise<{ code: number; signal: NodeJS.Signals | null; stderr: string }> {
   return new Promise((resolve) => {
+    if (signal.aborted) {
+      resolve({ code: -1, signal: null, stderr: "aborted" });
+      return;
+    }
     const child = spawn(ffmpegExe, args, {
       windowsHide: true,
+      detached: process.platform === "linux",
     });
 
     if (child.pid) {
@@ -141,6 +146,7 @@ function runFfmpegWithProgress(
     let curBytes = 0;
     let curTimeUs = 0;
     let lastEmitAt = 0;
+    let sawUs = false;
 
     child.stdout.on("data", (chunk) => {
       stdoutBuf += String(chunk);
@@ -156,7 +162,10 @@ function runFfmpegWithProgress(
         if (key === "fps") curFps = Number(val) || 0;
         else if (key === "speed") curSpeed = val;
         else if (key === "total_size") curBytes = Number(val) || 0;
-        else if (key === "out_time_us" || key === "out_time_ms") {
+        else if (key === "out_time_us") {
+          sawUs = true;
+          curTimeUs = Number(val) || 0;
+        } else if (key === "out_time_ms" && !sawUs) {
           curTimeUs = Number(val) || 0;
         } else if (key === "progress" && onProgress) {
           const now = Date.now();
@@ -180,6 +189,14 @@ function runFfmpegWithProgress(
     });
 
     const onAbort = () => {
+      if (process.platform === "linux" && child.pid) {
+        try {
+          process.kill(-child.pid, "SIGKILL");
+          return;
+        } catch {
+          // not a group leader
+        }
+      }
       try {
         child.kill();
       } catch {
@@ -252,6 +269,7 @@ async function processOneVideo(
       src,
       d.file.mtime,
       d.file.size,
+      o.signal,
     );
 
     const finalOut = videoOutputPathFor(d, o.sourceRoot, o.effectiveDestination, o.policy);
@@ -275,7 +293,12 @@ async function processOneVideo(
         (facts.width &&
           facts.height &&
           Math.min(facts.width, facts.height) <= o.policy.maxResolution);
-      if (resOk && o.policy.quality >= 52) {
+      const fpsOk =
+        o.policy.maxFps === 0 ||
+        !facts.fps ||
+        facts.fps <= o.policy.maxFps + 0.5;
+      const audioOk = o.policy.audioMode === "auto" || o.policy.audioMode === "copy";
+      if (resOk && fpsOk && audioOk && o.policy.quality >= 52) {
         const copyDecision: VideoDecision = { ...d, verdict: "copy", reason: "already-efficient" };
         const copyOut = videoOutputPathFor(
           copyDecision,

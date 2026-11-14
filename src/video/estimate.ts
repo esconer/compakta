@@ -20,12 +20,33 @@ import { buildVideoEncoderArgs, VIDEO_FORMAT_SPECS } from "./formats.ts";
 import { probeVideo } from "./meta.ts";
 import type { VideoDecision, VideoPolicy } from "./policy.ts";
 
-function runFfmpegSlice(exe: string, args: string[]): Promise<number> {
+function runFfmpegSlice(exe: string, args: string[], signal?: AbortSignal): Promise<number> {
   return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve(-1);
+      return;
+    }
     const c = spawn(exe, args, { windowsHide: true, stdio: "ignore" });
     if (c.pid) applyProcessCpuLimit(c.pid, 70);
-    c.on("error", () => resolve(-1));
-    c.on("close", (code) => resolve(code ?? -1));
+    const killChild = () => {
+      try {
+        c.kill();
+      } catch {
+        /* ignore */
+      }
+    };
+    const timer = setTimeout(killChild, 60_000);
+    signal?.addEventListener("abort", killChild, { once: true });
+    c.on("error", () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", killChild);
+      resolve(-1);
+    });
+    c.on("close", (code) => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", killChild);
+      resolve(code ?? -1);
+    });
   });
 }
 
@@ -36,6 +57,7 @@ export async function estimateVideoFromSample(opts: {
   policy: VideoPolicy;
   sampleSize?: number;
   flatRatio?: number;
+  signal?: AbortSignal;
 }): Promise<Estimate> {
   const started = Date.now();
   const totalConvert = opts.convert.length;
@@ -84,12 +106,14 @@ export async function estimateVideoFromSample(opts: {
           : null;
 
     for (let i = 0; i < sample.length; i++) {
+      if (opts.signal?.aborted) break;
       const d = sample[i];
       const facts = await probeVideo(
         opts.ffmpeg.ffprobePath,
         d.file.abs,
         d.file.mtime,
         d.file.size,
+        opts.signal,
       );
       const dur = facts.durationSec && facts.durationSec > 0 ? facts.durationSec : 10;
 
@@ -123,7 +147,7 @@ export async function estimateVideoFromSample(opts: {
         });
 
       let t0 = Date.now();
-      let code = await runFfmpegSlice(opts.ffmpeg.ffmpegPath, buildSliceArgs(sliceStart));
+      let code = await runFfmpegSlice(opts.ffmpeg.ffmpegPath, buildSliceArgs(sliceStart), opts.signal);
       let elapsedMs = Date.now() - t0;
 
       let sliceBytes = 0;
@@ -141,7 +165,7 @@ export async function estimateVideoFromSample(opts: {
       if (sliceBytes < 1024 && sliceStart > 0) {
         await rm(outSlice, { force: true }).catch(() => {});
         t0 = Date.now();
-        code = await runFfmpegSlice(opts.ffmpeg.ffmpegPath, buildSliceArgs(0));
+        code = await runFfmpegSlice(opts.ffmpeg.ffmpegPath, buildSliceArgs(0), opts.signal);
         elapsedMs = Date.now() - t0;
         if (code === 0) {
           try {

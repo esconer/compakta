@@ -34,6 +34,7 @@ export class VideoJob extends EventEmitter {
   readonly id: string;
   state: JobState = "idle";
   results: FileResult[] = [];
+  lastTerminalEvent: Progress | null = null;
   private controller = new AbortController();
   private started = 0;
   private elapsedBeforePauseMs = 0;
@@ -189,8 +190,6 @@ export class VideoJob extends EventEmitter {
   pause() {
     if (this.state !== "running") return false;
     this.pauseRequested = true;
-    this.elapsedBeforePauseMs += Date.now() - this.started;
-    this.started = 0;
 
     let anySuspended = false;
     for (const pid of this.activePids) {
@@ -200,6 +199,8 @@ export class VideoJob extends EventEmitter {
     }
 
     if (anySuspended) {
+      this.elapsedBeforePauseMs += Date.now() - this.started;
+      this.started = 0;
       this.osSuspended = true;
       this.state = "paused";
       this.emit("progress", {
@@ -226,14 +227,16 @@ export class VideoJob extends EventEmitter {
 
     if (this.state === "paused" && this.activePids.size === 0) {
       this.state = "cancelled";
-      this.emit("progress", {
+      const finishEvt: Progress = {
         type: "finish",
         at: Date.now(),
         jobId: this.id,
         manifestId: undefined,
         summary: this.summary(this.totals.bytes, "cancelled"),
         message: "Paused video run discarded. Completed files remain on disk.",
-      } satisfies Progress);
+      };
+      this.lastTerminalEvent = finishEvt;
+      this.emit("progress", finishEvt);
       return true;
     }
 
@@ -299,25 +302,31 @@ export class VideoJob extends EventEmitter {
           },
           onResult: (r) => {
             this.inFlight--;
-            this.done++;
             this.finished.add(r.rel);
             this.totals.bytes += r.outBytes;
-            this.totals[
-              r.status === "converted"
-                ? "converted"
-                : r.status === "copied"
-                  ? "copied"
-                  : r.status === "skipped"
-                    ? "skipped"
-                    : "failed"
-            ]++;
+            if (r.status !== "cancelled") {
+              this.done++;
+              this.totals[
+                r.status === "converted"
+                  ? "converted"
+                  : r.status === "copied"
+                    ? "copied"
+                    : r.status === "skipped"
+                      ? "skipped"
+                      : "failed"
+              ]++;
+            }
             this.emitProgress(r);
           },
         },
         this.shouldStop,
       );
 
-      if (this.pauseRequested && !this.controller.signal.aborted) {
+      if (this.pauseRequested && !this.controller.signal.aborted && this.done < this.total) {
+        if (this.started > 0) {
+          this.elapsedBeforePauseMs += Date.now() - this.started;
+          this.started = 0;
+        }
         this.state = "paused";
         this.results = [...this.results, ...result.results];
         this.emit("progress", {
@@ -360,21 +369,25 @@ export class VideoJob extends EventEmitter {
         );
       }
 
-      this.emit("progress", {
+      const finishEvt: Progress = {
         type: "finish",
         at: Date.now(),
         jobId: this.id,
         manifestId,
         summary: this.summary(this.totals.bytes, cancelled ? "cancelled" : undefined),
-      } satisfies Progress);
+      };
+      this.lastTerminalEvent = finishEvt;
+      this.emit("progress", finishEvt);
     } catch (err) {
       this.state = "failed";
-      this.emit("progress", {
+      const errEvt: Progress = {
         type: "error",
         at: Date.now(),
         jobId: this.id,
         message: (err as Error).message,
-      } satisfies Progress);
+      };
+      this.lastTerminalEvent = errEvt;
+      this.emit("progress", errEvt);
     }
   }
 }
@@ -405,7 +418,7 @@ export function newVideoJob(): VideoJob {
   );
   videoJobs.set(job.id, job);
   if (videoJobs.size > 40) {
-    const oldest = [...videoJobs.values()].find((j) => j.state !== "running");
+    const oldest = [...videoJobs.values()].find((j) => j.state !== "running" && j.state !== "paused");
     if (oldest) videoJobs.delete(oldest.id);
   }
   return job;

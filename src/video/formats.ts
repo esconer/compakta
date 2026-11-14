@@ -342,6 +342,10 @@ export type VideoEncoderArgsOptions = {
   progressPipe?: boolean;
 };
 
+const MP4_COPYABLE_AUDIO = new Set([
+  "aac", "mp3", "ac3", "eac3", "opus", "alac", "flac",
+]);
+
 export function buildVideoEncoderArgs(o: VideoEncoderArgsOptions): string[] {
   const args: string[] = ["-hide_banner", "-nostdin", "-y"];
   const isHw = o.format === "av1_hw" || o.format === "hevc_hw";
@@ -525,10 +529,10 @@ export function buildVideoEncoderArgs(o: VideoEncoderArgsOptions): string[] {
   } else {
     // Smart auto mode
     const srcAudio = (o.sourceAudioCodec ?? "").toLowerCase();
-    const isPcm = srcAudio.startsWith("pcm_");
+    const canCopyInMp4 = !srcAudio || MP4_COPYABLE_AUDIO.has(srcAudio);
     if (container === "webm" && srcAudio && !["opus", "vorbis"].includes(srcAudio)) {
       args.push("-c:a", "libopus", "-b:a", "128k");
-    } else if (isPcm) {
+    } else if (srcAudio && ((container === "mp4" && !canCopyInMp4) || srcAudio.startsWith("pcm_"))) {
       if (container === "mp4") {
         args.push("-c:a", "aac", "-b:a", "160k");
       } else {

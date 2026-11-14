@@ -56,6 +56,7 @@ export async function analyseVideoSync(
           policy,
         );
         expected.add(pathKey(path.resolve(copyOut)));
+        const candidates = out === copyOut ? [out] : [out, copyOut];
 
         let present = false;
         let stale = false;
@@ -63,7 +64,7 @@ export async function analyseVideoSync(
         let reason: string | undefined;
         let matchedOut = out;
 
-        for (const candidate of [out, copyOut]) {
+        for (const candidate of candidates) {
           try {
             const st = await stat(candidate);
             if (st.size === 0) {
@@ -79,8 +80,9 @@ export async function analyseVideoSync(
               reason = "output older than source";
             } else {
               present = true;
+              reason = undefined;
+              break;
             }
-            break;
           } catch {
             /* try next */
           }
@@ -120,7 +122,7 @@ export async function analyseVideoSync(
       }
       if (!e.isFile()) continue;
       if (e.name.startsWith(".picmagic-manifest-") || e.name.startsWith(".compakta-manifest-")) continue;
-      if (e.name.includes(".part")) continue;
+      if (/\.part(?:-\d+)?\.[^.]+$/i.test(e.name)) continue;
 
       const ext = extOf(e.name);
       // In "merge" mode, ignore photo outputs so only orphan videos are flagged
@@ -142,6 +144,7 @@ export async function analyseVideoSync(
   const newCount = entries.filter((e) => e.state === "new").length;
   const changedCount = entries.filter((e) => e.state === "changed").length;
   const pending = entries.filter((e) => e.state !== "upToDate");
+  const sortedOrphans = orphans.sort((a, b) => b.bytes - a.bytes);
 
   return {
     total: entries.length,
@@ -151,7 +154,8 @@ export async function analyseVideoSync(
     pendingCount: pending.length,
     pendingSourceBytes: pending.reduce((a, e) => a + e.sourceBytes, 0),
     orphanCount: orphans.length,
-    orphans: orphans.sort((a, b) => b.bytes - a.bytes).slice(0, 200),
+    orphans: sortedOrphans.slice(0, 200),
+    allOrphans: sortedOrphans,
     orphanBytes,
     entries,
     durationMs: Date.now() - started,

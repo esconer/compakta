@@ -325,15 +325,17 @@ export async function installLatestFfmpeg(): Promise<{ ok: boolean; path: string
   installState.percent = 0;
   installState.downloadedBytes = 0;
   installState.totalBytes = 0;
+  installState.error = undefined;
   installState.message = "Downloading FFmpeg static release…";
 
+  const archivePath = path.join(FFMPEG_DIR, path.basename(url));
   try {
     await mkdir(FFMPEG_DIR, { recursive: true });
-    const archivePath = path.join(FFMPEG_DIR, path.basename(url));
 
     const res = await fetch(url, {
       headers: { "user-agent": `compakta/${APP_VERSION}` },
       redirect: "follow",
+      signal: AbortSignal.timeout(10 * 60_000),
     });
     if (!res.ok || !res.body) {
       throw new Error(`Download failed with HTTP ${res.status}`);
@@ -362,10 +364,35 @@ export async function installLatestFfmpeg(): Promise<{ ok: boolean; path: string
     installState.percent = 100;
     installState.message = "Extracting FFmpeg package…";
 
+    // Prune older managed FFmpeg subdirectories so findFfmpeg picks the fresh install
+    try {
+      for (const ent of readdirSync(FFMPEG_DIR, { withFileTypes: true })) {
+        if (ent.isDirectory() && /^ffmpeg-/i.test(ent.name)) {
+          rmSync(path.join(FFMPEG_DIR, ent.name), { recursive: true, force: true });
+        }
+      }
+    } catch {
+      // ignore
+    }
+
     const tarCmd = getTarBinary();
-    execFileSync(tarCmd, ["-xf", archivePath, "-C", FFMPEG_DIR], {
-      windowsHide: true,
-      timeout: 120_000,
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(tarCmd, ["-xf", archivePath, "-C", FFMPEG_DIR], {
+        windowsHide: true,
+        stdio: "ignore",
+      });
+      const timer = setTimeout(() => {
+        try { child.kill(); } catch {}
+        reject(new Error("FFmpeg extraction timed out"));
+      }, 120_000);
+      child.on("error", (err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+      child.on("close", (code) => {
+        clearTimeout(timer);
+        code === 0 ? resolve() : reject(new Error(`tar exited with code ${code ?? -1}`));
+      });
     });
 
     if (!IS_WINDOWS) {
@@ -381,7 +408,6 @@ export async function installLatestFfmpeg(): Promise<{ ok: boolean; path: string
       }
     }
 
-    rmSync(archivePath, { force: true });
     cachedFfmpeg = null;
     const info = findFfmpeg(true);
 
@@ -393,5 +419,7 @@ export async function installLatestFfmpeg(): Promise<{ ok: boolean; path: string
     installState.error = (err as Error).message;
     installState.message = `Installation failed: ${(err as Error).message}`;
     throw err;
+  } finally {
+    rmSync(archivePath, { force: true });
   }
 }

@@ -9,6 +9,7 @@ import { CASE_INSENSITIVE, relTop } from "../platform.ts";
 import type { ScannedFile, ScanResult } from "../scan.ts";
 import {
   DEFAULT_VIDEO_FORMAT,
+  isVideoOutputFormat,
   VIDEO_FORMAT_SPECS,
   type AudioMode,
   type MaxFps,
@@ -122,6 +123,18 @@ export function normaliseVideoPolicy(p?: Partial<VideoPolicy>): VideoPolicy {
     ...new Set((v ?? []).filter((s) => typeof s === "string" && s.length > 0)),
   ];
 
+  const outputFormat = isVideoOutputFormat(base.outputFormat)
+    ? base.outputFormat
+    : DEFAULT_VIDEO_FORMAT;
+  const spec = VIDEO_FORMAT_SPECS[outputFormat];
+  const rawContainer = ["mp4", "mkv", "webm"].includes(base.container) ? base.container : "mp4";
+  const container: VideoContainer =
+    outputFormat === "vp9"
+      ? "webm"
+      : (rawContainer === "webm" && (outputFormat === "hevc" || outputFormat === "hevc_hw"))
+        ? "mp4"
+        : rawContainer;
+
   return {
     ...base,
     excludedFolders: cleanFolders(base.excludedFolders),
@@ -132,10 +145,10 @@ export function normaliseVideoPolicy(p?: Partial<VideoPolicy>): VideoPolicy {
     minSizeBytes: Math.max(0, Math.round(Number(base.minSizeBytes) || 0)),
     copyUndersized: Boolean(base.copyUndersized),
     destMode: base.destMode === "subfolder" || base.destMode === "custom" ? base.destMode : "merge",
-    outputFormat: base.outputFormat ?? DEFAULT_VIDEO_FORMAT,
-    container: base.container ?? "mp4",
+    outputFormat,
+    container,
     quality: Math.max(20, Math.min(84, Math.round(Number(base.quality) || 60))),
-    speed: Math.max(1, Math.min(10, Math.round(Number(base.speed) || 6))),
+    speed: Math.max(spec.speed.min, Math.min(spec.speed.max, Math.round(Number(base.speed) || spec.speed.default))),
     maxResolution: [0, 2160, 1440, 1080, 720].includes(base.maxResolution as any)
       ? base.maxResolution
       : 0,
@@ -164,10 +177,6 @@ export function resolveVideoDestination(
   }
   if (policy.destMode === "subfolder") {
     return path.join(photoDest, "video");
-  }
-  const defaultSuffix = `${sourceRoot.replace(/[\\/]+$/, "")}-${VIDEO_FORMAT_SPECS[policy.outputFormat].destinationSuffix}`;
-  if (custom && custom !== defaultSuffix) {
-    return custom;
   }
   return photoDest;
 }
@@ -277,7 +286,7 @@ function classifyVideo(
   } else {
     const incLen = longestMatchingFolder(policy.includedFolders, dir);
     const exLen = longestMatchingFolder(policy.excludedFolders, dir);
-    if (exLen > -1 && exLen >= incLen) {
+    if (exLen > -1 && exLen > incLen) {
       return { verdict: "skip", reason: "folder-excluded" };
     }
   }
@@ -335,8 +344,8 @@ export function applyVideoPolicy(
     { convertCount: number; copyCount: number; convertBytes: number; copyBytes: number }
   >();
 
-  const bump = (rel: string, key: "convert" | "copy", bytes: number) => {
-    const top = relTop(rel);
+  const bump = (d: VideoDecision, key: "convert" | "copy", bytes: number) => {
+    const top = d.file.dir === "." || !d.file.dir ? "(root)" : relTop(d.file.rel);
     const e = folderMap.get(top) ?? {
       convertCount: 0,
       copyCount: 0,
@@ -353,8 +362,8 @@ export function applyVideoPolicy(
     folderMap.set(top, e);
   };
 
-  for (const d of convert) bump(d.file.rel, "convert", d.file.size);
-  for (const d of copy) bump(d.file.rel, "copy", d.file.size);
+  for (const d of convert) bump(d, "convert", d.file.size);
+  for (const d of copy) bump(d, "copy", d.file.size);
 
   const byFolder = [...folderMap.entries()]
     .map(([rel, e]) => ({
