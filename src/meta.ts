@@ -58,11 +58,20 @@ export function identify(
   return new Promise((resolve) => {
     const c = spawn(magickPath, ["identify", "-quiet", "-format", PROBE, file + "[0]"], {
       windowsHide: true,
+      detached: process.platform === "linux",
       env: { ...process.env, MAGICK_THREAD_LIMIT: "1" },
     });
-    const onAbort = () => {
+    const killChild = () => {
+      if (process.platform === "linux" && c.pid) {
+        try { process.kill(-c.pid, "SIGKILL"); return; } catch { /* ignore */ }
+      }
       try { c.kill(); } catch { /* already gone */ }
     };
+    const onAbort = () => {
+      clearTimeout(timer);
+      killChild();
+    };
+    const timer = setTimeout(killChild, 15_000);
     signal?.addEventListener("abort", onAbort, { once: true });
 
     let out = "";
@@ -70,10 +79,12 @@ export function identify(
     c.stdout.on("data", (d) => { if (out.length < 4000) out += String(d); });
     c.stderr.on("data", (d) => { if (err.length < 2000) err += String(d); });
     c.on("error", (e) => {
+      clearTimeout(timer);
       signal?.removeEventListener("abort", onAbort);
       resolve({ path: file, ok: false, error: String(e.message ?? e) });
     });
     c.on("close", (code) => {
+      clearTimeout(timer);
       signal?.removeEventListener("abort", onAbort);
       if (signal?.aborted || code !== 0 || !out.trim()) {
         resolve({ path: file, ok: false, error: err.trim().slice(0, 300) || `exit ${code}` });
@@ -122,7 +133,7 @@ export function dateFromName(name: string): string | null {
   const m = NAME_DATE.exec(name);
   if (!m) return null;
   const [, y, mo, d, h, mi, s] = m;
-  if (+mo < 1 || +mo > 12 || +d < 1 || +d > 31) return null;
+  if (+y < 1970 || +y > 2100 || +mo < 1 || +mo > 12 || +d < 1 || +d > 31) return null;
   return `${y}:${mo}:${d} ${h ?? "00"}:${mi ?? "00"}:${s ?? "00"}`;
 }
 

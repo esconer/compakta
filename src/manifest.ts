@@ -5,7 +5,7 @@
  * considers paths listed in a manifest, and refuses any path outside the
  * destination it was recorded against.
  */
-import { writeFile, readFile, rm, rmdir } from "node:fs/promises";
+import { writeFile, readFile, rename, rm, rmdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import type { FileResult } from "./convert.ts";
@@ -70,7 +70,10 @@ export async function writeManifest(
     },
   };
 
-  await writeFile(manifestPath(destination, id), JSON.stringify(manifest, null, 2), "utf8");
+  const target = manifestPath(destination, id);
+  const tmp = `${target}.tmp-${process.pid}`;
+  await writeFile(tmp, JSON.stringify(manifest, null, 2), "utf8");
+  await rename(tmp, target);
   return manifest;
 }
 
@@ -143,9 +146,11 @@ export async function undoManifest(
       await rmdir(dir).catch(() => {});
     }
 
-    await rm(manifestPath(manifest.destination, manifest.id), { force: true }).catch(() => {});
-    await rm(path.join(manifest.destination, `.compakta-manifest-${manifest.id}.json`), { force: true }).catch(() => {});
-    await rm(path.join(manifest.destination, `.picmagic-manifest-${manifest.id}.json`), { force: true }).catch(() => {});
+    if (res.errors.length === 0) {
+      await rm(manifestPath(manifest.destination, manifest.id), { force: true }).catch(() => {});
+      await rm(path.join(manifest.destination, `.compakta-manifest-${manifest.id}.json`), { force: true }).catch(() => {});
+      await rm(path.join(manifest.destination, `.picmagic-manifest-${manifest.id}.json`), { force: true }).catch(() => {});
+    }
   }
   return res;
 }

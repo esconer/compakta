@@ -142,18 +142,28 @@ export function normalisePolicy(p: Partial<Policy> | undefined): Policy {
   const cleanFiles = (v: string[] | undefined) => [
     ...new Set((v ?? []).filter((s) => typeof s === "string" && s.length > 0)),
   ];
+  const outputFormat = isOutputFormat(base.outputFormat) ? base.outputFormat : DEFAULT_FORMAT;
+  const rawQualities = (base.qualities ?? [FORMAT_SPECS[outputFormat].quality.default])
+    .map((q) => Math.round(Number(q)))
+    .filter((q) => Number.isFinite(q) && q > 0 && q <= 100);
+  const qualities = rawQualities.length > 0
+    ? [...new Set(rawQualities)]
+    : [FORMAT_SPECS[outputFormat].quality.default];
+  const rawMin = Number(base.minSizeBytes);
+  const rawSpeed = Number(base.heicSpeed);
+
   return {
     ...base,
     extEnabled,
-    outputFormat: isOutputFormat(base.outputFormat) ? base.outputFormat : DEFAULT_FORMAT,
+    outputFormat,
     excludedFolders: cleanFolders(base.excludedFolders),
     includedFolders: cleanFolders(base.includedFolders),
     excludedFiles: cleanFiles(base.excludedFiles),
     includedFiles: cleanFiles(base.includedFiles),
-    qualities: (base.qualities ?? [60]).filter((q) => Number.isFinite(q) && q > 0),
-    minSizeBytes: Math.max(0, base.minSizeBytes ?? 0),
+    qualities,
+    minSizeBytes: Number.isFinite(rawMin) ? Math.max(0, rawMin) : 0,
     // aom accepts 0-10, but 10 exits 0 while writing an empty file.
-    heicSpeed: Math.max(0, Math.min(9, base.heicSpeed ?? 6)),
+    heicSpeed: Number.isFinite(rawSpeed) ? Math.max(0, Math.min(9, Math.round(rawSpeed))) : 6,
     maxResolution: [0, 5120, 3840, 2560, 1920].includes(Number(base.maxResolution))
       ? Number(base.maxResolution)
       : 0,
@@ -335,15 +345,15 @@ export function applyPolicy(
   const folderMap = new Map<string, {
     convertCount: number; copyCount: number; convertBytes: number; copyBytes: number;
   }>();
-  const bump = (rel: string, key: "convert" | "copy", bytes: number) => {
-    const top = relTop(rel);
+  const bump = (d: Decision, key: "convert" | "copy", bytes: number) => {
+    const top = d.file.dir === "." || !d.file.dir ? "(root)" : relTop(d.file.rel);
     const e = folderMap.get(top) ?? { convertCount: 0, copyCount: 0, convertBytes: 0, copyBytes: 0 };
     if (key === "convert") { e.convertCount++; e.convertBytes += bytes; }
     else { e.copyCount++; e.copyBytes += bytes; }
     folderMap.set(top, e);
   };
-  for (const d of convert) bump(d.file.rel, "convert", d.file.size);
-  for (const d of copy) bump(d.file.rel, "copy", d.file.size);
+  for (const d of convert) bump(d, "convert", d.file.size);
+  for (const d of copy) bump(d, "copy", d.file.size);
 
   const byFolder = [...folderMap.entries()]
     .map(([rel, e]) => ({

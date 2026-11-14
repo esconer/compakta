@@ -9,6 +9,7 @@ import { stat } from "node:fs/promises";
 import type { FileResult } from "./convert.ts";
 import { identify, type ImageFacts } from "./meta.ts";
 import { runPool } from "./convert.ts";
+import { stratifiedSample } from "./estimate.ts";
 
 export type VerifyRow = {
   rel: string;
@@ -45,7 +46,7 @@ export async function verifyOutputs(
 ): Promise<VerifyReport> {
   const started = Date.now();
   const produced = results.filter((r) => r.status === "converted" || r.status === "copied");
-  const sample = opts.limit ? produced.slice(0, opts.limit) : produced;
+  const sample = opts.limit ? stratifiedSample(produced, opts.limit) : produced;
   const rows: VerifyRow[] = [];
 
   await runPool(sample, opts.signal ?? new AbortController().signal, async (r) => {

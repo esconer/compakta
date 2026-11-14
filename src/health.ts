@@ -2,6 +2,7 @@
  * Health check: everything that would silently ruin a long run, surfaced up front.
  */
 import { stat } from "node:fs/promises";
+import path from "node:path";
 import { findMagick, freeSpace, type MagickInfo } from "./paths.ts";
 import { FORMAT_SPECS, type OutputFormat } from "./formats.ts";
 
@@ -82,9 +83,21 @@ export async function runHealthCheck(
     await access(destination, (await import("node:fs")).constants.W_OK);
     checks.push({ id: "dest", label: "Output writable", status: "ok", detail: destination });
   } catch (err) {
+    const { access } = await import("node:fs/promises");
+    const { constants } = await import("node:fs");
+    let ancestor = path.dirname(path.resolve(destination));
+    while (ancestor && ancestor !== path.dirname(ancestor)) {
+      try { await stat(ancestor); break; } catch { ancestor = path.dirname(ancestor); }
+    }
+    let parentWritable = false;
+    try { await access(ancestor, constants.W_OK); parentWritable = true; } catch { /* not writable */ }
     checks.push({
-      id: "dest", label: "Output writable", status: "warn",
-      detail: `${destination} - will be created (${(err as Error).message.slice(0, 60)})`,
+      id: "dest",
+      label: "Output writable",
+      status: parentWritable ? "warn" : "fail",
+      detail: parentWritable
+        ? `${destination} - will be created (${(err as Error).message.slice(0, 60)})`
+        : `${destination} - parent folder "${ancestor}" is not writable`,
     });
   }
 

@@ -47,6 +47,8 @@ export type SyncReport = {
   orphanCount: number;
   orphans: { out: string; bytes: number }[];
   orphanBytes: number;
+  /** Uncapped orphan list for explicit cleanOrphans calls. */
+  allOrphans: { out: string; bytes: number }[];
   entries: SyncEntry[];
   durationMs: number;
 };
@@ -70,8 +72,11 @@ export async function analyseSync(
         const d = decisions[cursor++];
         // Multi-quality runs produce one output per quality; the source is only
         // "done" when every variant is present.
-        const outs = policy.qualities.map((q) =>
-          outputPathFor(d, sourceRoot, destination, policy, q));
+        const outs = [
+          ...new Set(
+            policy.qualities.map((q) => outputPathFor(d, sourceRoot, destination, policy, q)),
+          ),
+        ];
 
         let allPresent = true;
         let anyStale = false;
@@ -160,7 +165,7 @@ export async function analyseSync(
       if (e.isDirectory()) { await walk(full); continue; }
       if (!e.isFile()) continue;
       if (e.name.startsWith(".picmagic-manifest-") || e.name.startsWith(".compakta-manifest-")) continue;
-      if (e.name.includes(".part")) continue;
+      if (/\.part(?:-\d+)?\.[^.]+$/i.test(e.name)) continue;
       // In merge mode, video files sharing the photo destination tree are not
       // photo orphans. Use the full list, not a hardcoded subset.
       if (VIDEO_EXT_SET.has(extOf(e.name))) continue;
@@ -177,6 +182,7 @@ export async function analyseSync(
   const newCount = entries.filter((e) => e.state === "new").length;
   const changedCount = entries.filter((e) => e.state === "changed").length;
   const pending = entries.filter((e) => e.state !== "upToDate");
+  const sortedOrphans = orphans.sort((a, b) => b.bytes - a.bytes);
 
   return {
     total: entries.length,
@@ -186,7 +192,8 @@ export async function analyseSync(
     pendingCount: pending.length,
     pendingSourceBytes: pending.reduce((a, e) => a + e.sourceBytes, 0),
     orphanCount: orphans.length,
-    orphans: orphans.sort((a, b) => b.bytes - a.bytes).slice(0, 200),
+    orphans: sortedOrphans.slice(0, 200),
+    allOrphans: sortedOrphans,
     orphanBytes,
     entries,
     durationMs: Date.now() - started,

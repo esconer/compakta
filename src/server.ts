@@ -4,7 +4,7 @@
  * Bun.serve() on localhost only. Every route either reads state or shells out
  * to the local ImageMagick build. The source tree is never written to.
  */
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { readdir, rename, rm, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -484,7 +484,9 @@ async function handleApi(pathname: string, req: Request, url: URL): Promise<Resp
     assertDestinationSafe(nextSource, nextDest);
 
     if (typeof body.destination === "string") state.destination = body.destination;
-    if (typeof body.budgetBytes === "number") state.budgetBytes = body.budgetBytes;
+    if (typeof body.budgetBytes === "number" && Number.isFinite(body.budgetBytes) && body.budgetBytes > 0) {
+      state.budgetBytes = body.budgetBytes;
+    }
     if (Array.isArray(body.redundantRoots)) state.redundantRoots = body.redundantRoots;
     applyPolicyUpdate(body.policy);
 
@@ -634,6 +636,7 @@ async function handleApi(pathname: string, req: Request, url: URL): Promise<Resp
       jobs: Math.max(1, Math.min(body.jobs ?? 4, 16)),
       sampleSize: Math.max(10, Math.min(body.sampleSize ?? 120, 2000)),
       flatRatio: state.ratios[format],
+      signal: req.signal,
     });
     state.lastEstimate = est;
     // A real measurement becomes the flat ratio for this format only.
@@ -660,6 +663,8 @@ async function handleApi(pathname: string, req: Request, url: URL): Promise<Resp
       duplicateBytes: res.duplicateBytes,
       hashedFiles: res.hashedFiles,
       durationMs: res.durationMs,
+      truncated: res.truncated,
+      candidateCount: res.candidateCount,
     });
   }
 
@@ -1280,6 +1285,10 @@ async function handleApi(pathname: string, req: Request, url: URL): Promise<Resp
           } catch { /* client went away */ }
         };
         send({ type: "hello", jobId: job.id, state: job.state });
+        if (job.lastTerminalEvent) {
+          send(job.lastTerminalEvent);
+          return;
+        }
         job.on("progress", send);
         ping = setInterval(() => {
           try { controller.enqueue(encoder.encode(": ping\n\n")); } catch { /* ignore */ }
@@ -1326,6 +1335,9 @@ async function handleApi(pathname: string, req: Request, url: URL): Promise<Resp
   if (route.startsWith("resume/") && req.method === "POST") {
     const job = getJob(route.slice("resume/".length));
     if (!job) throw new HttpError(404, "Unknown job.");
+    if (job.state !== "paused") {
+      throw new HttpError(409, `Cannot resume from "${job.state}".`);
+    }
     void job.resume();
     return json({ ok: true, state: job.state, total: job.progress().total });
   }
@@ -1387,7 +1399,7 @@ async function handleApi(pathname: string, req: Request, url: URL): Promise<Resp
     const preview = currentPreview();
     const decisions = [...preview.convert, ...preview.copy];
     const report = await analyseSync(decisions, state.sourceRoot, state.destination, state.policy);
-    const result = await cleanOrphans(state.destination, report.orphans);
+    const result = await cleanOrphans(state.destination, report.allOrphans);
     state.sync = null;
     return json(result);
   }
@@ -1453,7 +1465,6 @@ async function handleApi(pathname: string, req: Request, url: URL): Promise<Resp
 function projectList(): string[] {
   const base = path.dirname(path.resolve(state.sourceRoot));
   if (!existsSync(base)) return [];
-  const { readdirSync } = require("node:fs");
   try {
     return readdirSync(base, { withFileTypes: true })
       .filter((d: any) => d.isDirectory() && !/^(\$|System)/i.test(d.name))
@@ -1585,6 +1596,7 @@ async function serveStatic(pathname: string): Promise<Response> {
           "content-type": PREVIEW_MIME[path.extname(name).toLowerCase()]
             ?? "application/octet-stream",
           "cache-control": "no-store",
+          "x-content-type-options": "nosniff",
         },
       });
     } catch {
@@ -1603,7 +1615,10 @@ async function serveStatic(pathname: string): Promise<Response> {
       return new Response("not found", { status: 404 });
     }
     return new Response(pubFile, {
-      headers: { "content-type": MIME[path.extname(file).toLowerCase()] ?? "application/octet-stream" },
+      headers: {
+        "content-type": MIME[path.extname(file).toLowerCase()] ?? "application/octet-stream",
+        "x-content-type-options": "nosniff",
+      },
     });
   } catch {
     return new Response("not found", { status: 404 });

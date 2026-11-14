@@ -29,6 +29,8 @@ export type DedupeResult = {
   hashedFiles: number;
   hashedBytes: number;
   durationMs: number;
+  truncated: boolean;
+  candidateCount: number;
 };
 
 const CHUNK_BYTES = 64 * 1024;
@@ -83,7 +85,9 @@ export async function findDuplicates(
 ): Promise<DedupeResult> {
   const started = Date.now();
   const maxHash = opts.maxHash ?? 40_000;
-  const cands = candidatesBySize(files, policy).slice(0, maxHash);
+  const allCands = candidatesBySize(files, policy);
+  const truncated = allCands.length > maxHash;
+  const cands = allCands.slice(0, maxHash);
 
   const CONC = 8;
   const partialGroups = new Map<string, ScannedFile[]>();
@@ -181,5 +185,7 @@ export async function findDuplicates(
     hashedFiles,
     hashedBytes,
     durationMs: Date.now() - started,
+    truncated,
+    candidateCount: allCands.length,
   };
 }

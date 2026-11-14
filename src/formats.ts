@@ -467,6 +467,12 @@ export function sourceArgFor(
     return `${abs}[0]`;
   }
 
+  // Multi-IFD containers (TIFF, DNG) often store embedded thumbnail pages that
+  // become flickering animations if passed without [0] to AVIF/JXL/WebP.
+  if (ext === "tif" || ext === "tiff" || ext === "dng") {
+    return `${abs}[0]`;
+  }
+
   // Preserve the exact existing AVIF/WebP behaviour. JXL also preserves
   // animation, verified with the bundled build.
   return flattenGif && ext === "gif" ? `${abs}[0]` : abs;

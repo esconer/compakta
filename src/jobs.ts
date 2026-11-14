@@ -2,6 +2,7 @@
  * Run lifecycle: start, stream progress over SSE, cancel.
  */
 import { EventEmitter } from "node:events";
+import path from "node:path";
 import type { FileResult } from "./convert.ts";
 import { runConversion } from "./convert.ts";
 import type { Decision, Policy } from "./policy.ts";
@@ -54,6 +55,8 @@ export class Job extends EventEmitter {
   state: JobState = "idle";
   /** Retained so verification can re-open exactly what this run produced. */
   results: FileResult[] = [];
+  /** Last terminal SSE frame so late-attaching EventSource clients don't hang. */
+  lastTerminalEvent: Progress | null = null;
   private controller = new AbortController();
   private started = 0;
   private done = 0;
@@ -214,14 +217,16 @@ private total = 0;
     // abandoned and the UI's "Cancel instead" would silently do nothing.
     if (this.state === "paused") {
       this.state = "cancelled";
-      this.emit("progress", {
+      const finishEvt: Progress = {
         type: "finish",
         at: Date.now(),
         jobId: this.id,
         manifestId: undefined,
         summary: this.summary(this.totals.bytes, "cancelled"),
         message: "Paused run discarded. Completed files are on disk and will be skipped next time.",
-      } satisfies Progress);
+      };
+      this.lastTerminalEvent = finishEvt;
+      this.emit("progress", finishEvt);
       return true;
     }
     if (this.state !== "running") return false;
@@ -284,19 +289,21 @@ private total = 0;
         },
         onResult: (r) => {
           this.inFlight--;
-          this.done++;
           this.finished.add(r.rel);
           this.totals.bytes += r.outBytes;
-          this.totals[r.status === "converted" ? "converted"
-            : r.status === "copied" ? "copied"
-            : r.status === "skipped" ? "skipped"
-            : "failed"]++;
+          if (r.status !== "cancelled") {
+            this.done++;
+            this.totals[r.status === "converted" ? "converted"
+              : r.status === "copied" ? "copied"
+              : r.status === "skipped" ? "skipped"
+              : "failed"]++;
+          }
           this.emitProgress(r);
         },
       }, this.shouldStop);
 
       // A pause is not a finished run, so no manifest is written yet.
-      if (this.pauseRequested && !this.controller.signal.aborted) {
+      if (this.pauseRequested && !this.controller.signal.aborted && this.done < this.total) {
         this.elapsedBeforePauseMs += Date.now() - this.started;
         this.state = "paused";
         this.results = [...this.results, ...result.results];
@@ -337,19 +344,23 @@ private total = 0;
         );
       }
 
-      this.emit("progress", {
+      const finishEvt: Progress = {
         type: "finish",
         at: Date.now(),
         jobId: this.id,
         manifestId,
         summary: this.summary(this.totals.bytes, cancelled ? "cancelled" : undefined),
-      } satisfies Progress);
+      };
+      this.lastTerminalEvent = finishEvt;
+      this.emit("progress", finishEvt);
     } catch (err) {
       this.state = "failed";
-      this.emit("progress", {
+      const errEvt: Progress = {
         type: "error", at: Date.now(), jobId: this.id,
         message: (err as Error).message,
-      } satisfies Progress);
+      };
+      this.lastTerminalEvent = errEvt;
+      this.emit("progress", errEvt);
     }
   }
 }
@@ -383,7 +394,7 @@ export function newJob(): Job {
   jobs.set(job.id, job);
   // Keep the map from growing without bound over a long session.
   if (jobs.size > 40) {
-    const oldest = [...jobs.values()].find((j) => j.state !== "running");
+    const oldest = [...jobs.values()].find((j) => j.state !== "running" && j.state !== "paused");
     if (oldest) jobs.delete(oldest.id);
   }
   return job;
@@ -393,7 +404,7 @@ export async function manifestsFor(destination: string): Promise<Manifest[]> {
   const files = await listManifests(destination);
   const out: Manifest[] = [];
   for (const f of files) {
-    try { out.push(await readManifest(`${destination}/${f}`)); } catch { /* unreadable */ }
+    try { out.push(await readManifest(path.join(destination, f))); } catch { /* unreadable */ }
   }
   return out.sort((a, b) => b.createdAt - a.createdAt);
 }

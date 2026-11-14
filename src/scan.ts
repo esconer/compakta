@@ -5,7 +5,7 @@
  */
 import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
-import { CONVERT_EXTS, RAW_EXTS, VIDEO_EXTS, JUNK_EXTS, extOf } from "./paths.ts";
+import { CONVERT_EXTS, RAW_EXTS, VIDEO_EXTS, extOf } from "./paths.ts";
 
 export type Category = "image" | "raw" | "video" | "other";
 
@@ -141,6 +141,7 @@ export async function scanLibrary(
   const absRoot = path.resolve(root);
   const files: ScannedFile[] = [];
   const skipped: { path: string; reason: string }[] = [];
+  const STAT_CONCURRENCY = 24;
 
   async function walk(dirAbs: string, node: TreeNode, depth: number): Promise<void> {
     if (depth > maxDepth) return;
@@ -152,6 +153,8 @@ export async function scanLibrary(
       skipped.push({ path: dirAbs, reason: (err as Error).message });
       return;
     }
+
+    const fileEntries: { name: string; childAbs: string }[] = [];
 
     for (const entry of entries) {
       const name = entry.name;
@@ -172,29 +175,45 @@ export async function scanLibrary(
         continue;
       }
 
-      if (!entry.isFile()) continue;
+      if (entry.isFile()) fileEntries.push({ name, childAbs });
+    }
 
-      const ext = extOf(name);
-      let st;
-      try {
-        st = await stat(childAbs);
-      } catch {
-        continue; // vanished mid-scan; harmless
+    if (fileEntries.length > 0) {
+      let cursor = 0;
+      const results: Array<ScannedFile | null> = new Array(fileEntries.length).fill(null);
+      const workers = Math.min(STAT_CONCURRENCY, fileEntries.length);
+      await Promise.all(
+        Array.from({ length: workers }, async () => {
+          while (cursor < fileEntries.length) {
+            const idx = cursor++;
+            const { name, childAbs } = fileEntries[idx];
+            try {
+              const st = await stat(childAbs);
+              if (!st.isFile()) continue;
+              const ext = extOf(name);
+              const rel = path.relative(absRoot, childAbs);
+              results[idx] = {
+                abs: childAbs,
+                rel,
+                dir: path.dirname(rel),
+                name,
+                ext,
+                size: st.size,
+                category: categorise(ext),
+                mtime: st.mtimeMs,
+              };
+            } catch {
+              continue; // vanished mid-scan; harmless
+            }
+          }
+        }),
+      );
+      for (const f of results) {
+        if (f) {
+          files.push(f);
+          addToNode(node, f);
+        }
       }
-      if (!st.isFile()) continue;
-
-      const f: ScannedFile = {
-        abs: childAbs,
-        rel: path.relative(absRoot, childAbs),
-        dir: path.dirname(path.relative(absRoot, childAbs)),
-        name,
-        ext,
-        size: st.size,
-        category: categorise(ext),
-        mtime: st.mtimeMs,
-      };
-      files.push(f);
-      addToNode(node, f);
     }
   }
 

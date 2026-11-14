@@ -44,10 +44,15 @@ export function stratifiedSample<T>(items: T[], n: number): T[] {
   return out;
 }
 
-function magick(args: string[], exe: string): Promise<number> {
+function magick(args: string[], exe: string, signal?: AbortSignal): Promise<number> {
   return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve(-1);
+      return;
+    }
     const c = spawn(exe, args, {
       windowsHide: true,
+      detached: process.platform === "linux",
       stdio: "ignore",
       env: {
         ...process.env,
@@ -56,8 +61,15 @@ function magick(args: string[], exe: string): Promise<number> {
       },
     });
     if (c.pid) applyProcessCpuLimit(c.pid, 70);
-    c.on("error", () => resolve(-1));
-    c.on("close", (code) => resolve(code ?? -1));
+    const onAbort = () => {
+      if (process.platform === "linux" && c.pid) {
+        try { process.kill(-c.pid, "SIGKILL"); return; } catch { /* ignore */ }
+      }
+      try { c.kill(); } catch { /* ignore */ }
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    c.on("error", () => { signal?.removeEventListener("abort", onAbort); resolve(-1); });
+    c.on("close", (code) => { signal?.removeEventListener("abort", onAbort); resolve(code ?? -1); });
   });
 }
 
@@ -70,6 +82,7 @@ export async function estimateFromSample(opts: {
   jobs: number;
   sampleSize: number;
   flatRatio: number;
+  signal?: AbortSignal;
   keepScratch?: boolean;
 }): Promise<Estimate> {
   const started = Date.now();
@@ -92,14 +105,15 @@ export async function estimateFromSample(opts: {
   }
 
   const scratch = await mkdtemp(path.join(tmpdir(), "picmagic-est-"));
-  const sampledBytes = sample.reduce((a, d) => a + d.file.size, 0);
+  let measuredInputBytes = 0;
   let producedBytes = 0;
   let producedCount = 0;
+  const effectiveJobs = Math.max(1, Math.min(opts.jobs, sample.length, 16));
 
   try {
     await mkdir(scratch, { recursive: true });
 
-    await runPool(sample, new AbortController().signal, async (d) => {
+    await runPool(sample, opts.signal ?? new AbortController().signal, async (d) => {
       // Only the primary quality is measured; scaling by variant count is exact
       // enough because every variant is its own encode.
       const q = opts.policy.qualities[0];
@@ -122,6 +136,7 @@ export async function estimateFromSample(opts: {
           stripMetadata: opts.policy.stripMetadata,
         }),
         opts.magickPath,
+        opts.signal,
       );
       if (code !== 0) return;
       try {
@@ -133,28 +148,29 @@ export async function estimateFromSample(opts: {
           opts.policy.skipAlreadyEfficient !== false && opts.policy.qualities.length === 1
             ? Math.min(st.size, d.file.size)
             : st.size;
+        measuredInputBytes += d.file.size;
         producedBytes += measured;
         producedCount++;
       } catch { /* no output */ }
     },
     () => false,                       // a sample always runs to the end
-    () => Math.max(1, Math.min(opts.jobs, 16)),
+    () => effectiveJobs,
     );
   } finally {
     if (!opts.keepScratch) await rm(scratch, { recursive: true, force: true }).catch(() => {});
   }
 
   const elapsed = (Date.now() - started) / 1000;
-  const ratio = sampledBytes > 0 ? producedBytes / sampledBytes : opts.flatRatio;
+  const ratio = measuredInputBytes > 0 ? producedBytes / measuredInputBytes : opts.flatRatio;
   // Wall time at N jobs divided by N gives per-image service time.
-  const secondsPerImage = producedCount > 0 ? (elapsed / producedCount) * opts.jobs : 0;
+  const secondsPerImage = producedCount > 0 ? (elapsed / producedCount) * effectiveJobs : 0;
 
   const projectedOutputBytes = Math.round(totalConvertBytes * ratio * variants + totalCopyBytes);
-  const projectedSeconds = secondsPerImage * totalConvert;
+  const projectedSeconds = secondsPerImage * totalConvert * variants;
 
   return {
-    sampleSize: sample.length,
-    sampledBytes,
+    sampleSize: producedCount,
+    sampledBytes: measuredInputBytes,
     producedBytes,
     ratio,
     meanOutputBytes: producedCount > 0 ? producedBytes / producedCount : 0,
