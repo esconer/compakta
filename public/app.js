@@ -2348,6 +2348,18 @@ var checkIcon = (status) => {
 var statusWord = (status) => status === "ok" ? "OK" : status === "warn" ? "Warning" : "Failed";
 
 // src/client/views/compare.ts
+var avifDecodePromise = null;
+var canDecodeAvif = () => {
+  if (avifDecodePromise)
+    return avifDecodePromise;
+  avifDecodePromise = new Promise((resolve) => {
+    const probe = new Image;
+    probe.onload = () => resolve(probe.naturalWidth > 0 && probe.naturalHeight > 0);
+    probe.onerror = () => resolve(false);
+    probe.src = "data:image/avif;base64,AAAAIGZ0eXBhdmlmAAAAAGF2aWZtaWYxbWlhZk1BMUIAAADybWV0YQAAAAAAAAAoaGRscgAAAAAAAAAAcGljdAAAAAAAAAAAAAAAAGxpYmF2aWYAAAAADnBpdG0AAAAAAAEAAAAeaWxvYwAAAABEAAABAAEAAAABAAABGgAAAB0AAAAoaWluZgAAAAAAAQAAABppbmZlAgAAAAABAABhdjAxQ29sb3IAAAAAamlwcnAAAABLaXBjbwAAABRpc3BlAAAAAAAAAAIAAAACAAAAEHBpeGkAAAAAAwgICAAAAAxhdjFDgQ0MAAAAABNjb2xybmNseAACAAIAAYAAAAAXaXBtYQAAAAAAAAABAAEEAQKDBAAAACVtZGF0EgAKCBgANogQEAwgMg8f8D///8WfhwB8+ErK42A=";
+  });
+  return avifDecodePromise;
+};
 var fmtTime = (sec) => {
   const s = Math.max(0, Math.floor(sec));
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
@@ -2355,7 +2367,8 @@ var fmtTime = (sec) => {
 function createCompareView(actions) {
   let split = 50;
   let dimensions = null;
-  let busy = false;
+  let activeRunSeq = 0;
+  let compareAbort = null;
   let compareBg = "checker";
   let activeFormat = state.currentFormat;
   let isDraggingSplitter = false;
@@ -2407,7 +2420,7 @@ function createCompareView(actions) {
   };
   const renderFacts = (data, _variant) => {
     const origExt = data.originalExt ? data.originalExt.replace(/^\./, "").toUpperCase() : "JPEG";
-    const dimText = dimensions ? `${dimensions.width} × ${dimensions.height}` : "4032 × 3024";
+    const dimText = dimensions ? `${dimensions.width} × ${dimensions.height}` : "Loading…";
     const dateText = formatDate(data.mtime);
     const pathText = data.rel;
     $("compareFacts").innerHTML = `
@@ -2486,11 +2499,12 @@ function createCompareView(actions) {
     const saving = data.originalBytes > 0 ? Math.max(0, 100 - variant.bytes / data.originalBytes * 100) : 0;
     const savingText = `${saving.toFixed(1)}% smaller`;
     let stageHtml = "";
+    const splitClip = state.compareMode === "split" ? `-webkit-clip-path: inset(0 0 0 ${split}%); clip-path: inset(0 0 0 ${split}%);` : "";
     stageHtml += `
       <div class="compare-pane original${state.compareMode === "toggle" && !showOriginal ? " hidden" : ""}">
         <img src="${escapeHtml(data.originalUrl)}" alt="Original" draggable="false" style="${scale}">
       </div>
-      <div class="compare-pane variant" style="${state.compareMode === "split" ? `clip-path: inset(0 0 0 ${split}%);` : ""}">
+      <div class="compare-pane variant${state.compareMode === "toggle" && showOriginal ? " hidden" : ""}" style="${splitClip}">
         <img src="${escapeHtml(variant.url)}" alt="${escapeHtml(variant.label)} variant" draggable="false" style="${scale}">
       </div>
     `;
@@ -2596,8 +2610,19 @@ function createCompareView(actions) {
             renderFacts(data, variant);
           }
         });
+        img.addEventListener("error", () => {
+          const p = document.createElement("p");
+          p.textContent = "Failed to decode original image preview.";
+          $("compareErrors").append(p);
+        });
       }
     }
+    const varImg = stage.querySelector(".compare-pane.variant img");
+    varImg?.addEventListener("error", () => {
+      const p = document.createElement("p");
+      p.textContent = `Failed to decode ${data.formatLabel} q${variant.quality} preview.`;
+      $("compareErrors").append(p);
+    });
   };
   const updateSplitterPosition = (pct) => {
     split = Math.max(2, Math.min(98, pct));
@@ -2613,7 +2638,9 @@ function createCompareView(actions) {
     }
     const variantPane = stage.querySelector(".compare-pane.variant");
     if (variantPane) {
-      variantPane.style.clipPath = `inset(0 0 0 ${split}%)`;
+      const clip = `inset(0 0 0 ${split}%)`;
+      variantPane.style.setProperty("-webkit-clip-path", clip);
+      variantPane.style.clipPath = clip;
     }
   };
   const setupSplitterEvents = (stage) => {
@@ -2721,9 +2748,10 @@ function createCompareView(actions) {
     $("compareRail").classList.add("hidden");
   };
   const run = async (rel, format, timestampSec) => {
-    if (busy)
-      return;
-    busy = true;
+    const seq = ++activeRunSeq;
+    compareAbort?.abort();
+    const controller = new AbortController;
+    compareAbort = controller;
     state.compareRel = rel;
     if (format)
       activeFormat = format;
@@ -2740,7 +2768,16 @@ function createCompareView(actions) {
     $("compareStage").classList.add("hidden");
     $("compareRail").classList.add("hidden");
     try {
-      const data = await actions.runCompare(rel, activeFormat, timestampSec);
+      const baseNative = ["jpg", "jpeg", "jpe", "jfif", "png", "gif", "bmp", "webp"];
+      const nativeFormats = await canDecodeAvif() ? [...baseNative, "avif"] : baseNative;
+      if (seq !== activeRunSeq || controller.signal.aborted)
+        return;
+      const data = await actions.runCompare(rel, activeFormat, timestampSec, {
+        signal: controller.signal,
+        nativeFormats
+      });
+      if (seq !== activeRunSeq || controller.signal.aborted)
+        return;
       state.compare = data;
       if (!data.variants.length) {
         renderEmpty("No variants produced", data.errors[0] ?? "The encoder returned no output for this file.");
@@ -2748,10 +2785,13 @@ function createCompareView(actions) {
       }
       renderStage();
     } catch (error) {
+      if (seq !== activeRunSeq || controller.signal.aborted || error?.name === "AbortError")
+        return;
       state.compare = null;
       renderEmpty("Could not compare this file", error.message);
     } finally {
-      busy = false;
+      if (compareAbort === controller)
+        compareAbort = null;
     }
   };
   const open = (rel) => {
@@ -2778,6 +2818,9 @@ function createCompareView(actions) {
     run(chosen, activeFormat);
   };
   const close = () => {
+    activeRunSeq++;
+    compareAbort?.abort();
+    compareAbort = null;
     actions.switchView("workspace");
   };
   const setMode = (mode) => {
@@ -4064,16 +4107,18 @@ var undoManifest = async (id, summary) => {
   }
 };
 var verifyJob = async (jobId) => api("verify", { method: "POST", body: { jobId } });
-var runCompare = async (rel, format, timestampSec) => {
+var runCompare = async (rel, format, timestampSec, opts) => {
   const chosenFormat = format ?? state.currentFormat;
   const spec = state.formatSpecs[chosenFormat];
   return api("compare", {
     method: "POST",
+    signal: opts?.signal,
     body: {
       rel,
       format: chosenFormat,
       qualities: spec?.compareQualities ?? [30, 50, 60, 70, 80],
-      timestampSec
+      timestampSec,
+      nativeFormats: opts?.nativeFormats
     }
   });
 };

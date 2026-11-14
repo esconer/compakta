@@ -938,16 +938,19 @@ const runCompare = async (
   rel: string,
   format?: OutputFormat,
   timestampSec?: number,
+  opts?: { signal?: AbortSignal; nativeFormats?: string[] },
 ): Promise<CompareResponse> => {
   const chosenFormat = format ?? state.currentFormat;
   const spec = state.formatSpecs[chosenFormat];
   return api<CompareResponse>("compare", {
     method: "POST",
+    signal: opts?.signal,
     body: {
       rel,
       format: chosenFormat,
       qualities: spec?.compareQualities ?? [30, 50, 60, 70, 80],
       timestampSec,
+      nativeFormats: opts?.nativeFormats,
     },
   });
 };

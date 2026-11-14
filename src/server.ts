@@ -5,7 +5,7 @@
  * to the local ImageMagick build. The source tree is never written to.
  */
 import { existsSync } from "node:fs";
-import { readdir, rm, stat } from "node:fs/promises";
+import { readdir, rename, rm, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -31,7 +31,7 @@ import { planBudget, type BudgetPlan } from "./budget.ts";
 import { runHealthCheck, type HealthReport } from "./health.ts";
 import { Job, getJob, liveJob, pausedJob, newJob, manifestsFor, undoManifest } from "./jobs.ts";
 import { analyseSync, cleanOrphans, pendingOnly, type SyncReport } from "./sync.ts";
-import { formatBytes } from "./convert.ts";
+import { formatBytes, runPool } from "./convert.ts";
 import { checkForUpdate, installLatest, installProgress } from "./imagemagick.ts";
 import {
   applyAppUpdate,
@@ -269,6 +269,73 @@ function createSemaphore(max: number) {
 }
 
 const previewSemaphore = createSemaphore(4);
+
+/**
+ * Run ImageMagick to a temporary sibling file and atomically rename on success.
+ * Kills the full Linux process group on abort/timeout so AppImage inner
+ * processes cannot leak or leave 0-byte/truncated files in the preview cache.
+ */
+async function runMagickAtomic(
+  magickPath: string,
+  partPath: string,
+  destPath: string,
+  buildArgs: (target: string) => string[],
+  signal?: AbortSignal,
+  timeoutMs = 30_000,
+): Promise<number> {
+  await rm(partPath, { force: true }).catch(() => {});
+  try {
+    await new Promise<void>((resolve, reject) => {
+      if (signal?.aborted) {
+        reject(new HttpError(499, "Cancelled"));
+        return;
+      }
+      const child = spawn(magickPath, buildArgs(partPath), {
+        windowsHide: true,
+        detached: process.platform === "linux",
+        stdio: "ignore",
+        env: { ...process.env, MAGICK_THREAD_LIMIT: "1" },
+      });
+      const killTree = () => {
+        if (process.platform === "linux" && child.pid) {
+          try {
+            process.kill(-child.pid, "SIGKILL");
+            return;
+          } catch { /* not a group leader */ }
+        }
+        try { child.kill(); } catch { /* already gone */ }
+      };
+      const onAbort = () => {
+        clearTimeout(timer);
+        killTree();
+        reject(new HttpError(499, "Cancelled"));
+      };
+      const timer = setTimeout(() => {
+        signal?.removeEventListener("abort", onAbort);
+        killTree();
+        reject(new Error("ImageMagick decode timed out"));
+      }, timeoutMs);
+      signal?.addEventListener("abort", onAbort, { once: true });
+      child.on("close", (code) => {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
+        if (code === 0) resolve();
+        else reject(new Error(`ImageMagick exited with code ${code ?? -1}`));
+      });
+      child.on("error", (err) => {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
+        reject(err);
+      });
+    });
+    const st = await stat(partPath);
+    if (st.size === 0) throw new Error("encoder wrote nothing");
+    await rename(partPath, destPath);
+    return st.size;
+  } finally {
+    await rm(partPath, { force: true }).catch(() => {});
+  }
+}
 
 /**
  * Keep the disposable preview cache bounded across sessions:
@@ -763,7 +830,12 @@ async function handleApi(pathname: string, req: Request, url: URL): Promise<Resp
 
   // ---- quality preview: render one image at several qualities ----
   if (route === "compare" && req.method === "POST") {
-    const body = await readBody<{ rel: string; qualities?: number[]; format?: string }>(req);
+    const body = await readBody<{
+      rel: string;
+      qualities?: number[];
+      format?: string;
+      nativeFormats?: string[];
+    }>(req);
     if (!state.scan) throw new HttpError(400, "Scan the library first.");
     const file = findFileByRel(body.rel);
     if (!file) throw new HttpError(404, `Not in scan: ${body.rel}`);
@@ -788,65 +860,99 @@ async function handleApi(pathname: string, req: Request, url: URL): Promise<Resp
 
     const srcArg = sourceArgFor(file.abs, file.ext, format, false);
     const speed = state.policy.heicSpeed;
-    // Browsers natively render avif, webp, jpeg, and png in <img> tags;
-    // jxl, heic, and jp2 need a decoded PNG proxy to display in WebView2/Chromium.
-    const browserCanRenderVariant = NATIVE_IMAGE_EXTS.has(spec.ext.toLowerCase());
-    const variants: { quality: number; label: string; url: string; bytes: number }[] = [];
+    // Linux WebKitGTK (notably Ubuntu/Debian -DUSE_AVIF=OFF) cannot decode AVIF
+    // natively, so honour the browser's probed formats or default safely on Linux desktop.
+    const clientNative = Array.isArray(body.nativeFormats)
+      ? new Set(body.nativeFormats.map((e) => String(e).toLowerCase()))
+      : IS_LINUX && (process.env.COMPAKTA_DESKTOP || process.env.PICMAGIK_DESKTOP)
+        ? new Set([...NATIVE_IMAGE_EXTS].filter((e) => e !== "avif"))
+        : NATIVE_IMAGE_EXTS;
+    const browserCanRenderVariant = clientNative.has(spec.ext.toLowerCase());
+    const originalNeedsProxy = !clientNative.has(file.ext.toLowerCase());
+    const orderedVariants: Array<{ quality: number; label: string; url: string; bytes: number } | null> =
+      new Array(qualities.length).fill(null);
     const errors: string[] = [];
+    const stamp = `${file.size}-${Math.round(file.mtime)}`;
 
-    for (const q of qualities) {
-      // Include format and speed in the name so changing either slider cannot
-      // serve a stale preview from the disposable cache.
-      const name = `cmp-${hashRel(file.rel)}-${format}-q${q}-s${speed}.${spec.ext}`;
-      const out = path.join(outDir, name);
-      await new Promise<void>((resolve) => {
-        const c = spawn(magick.path, buildEncoderArgs({
-          srcArg, out, format, quality: q, speed,
-        }), {
-          windowsHide: true,
-          stdio: "ignore",
-          env: { ...process.env, MAGICK_THREAD_LIMIT: "1" },
-        });
-        c.on("close", () => resolve());
-        c.on("error", () => resolve());
-      });
-      let size = 0;
-      try {
-        size = (await stat(out)).size;
-        if (size === 0) { errors.push(`q${q}: encoder wrote nothing`); continue; }
-      } catch { errors.push(`q${q}: no output produced`); continue; }
+    await runPool(
+      qualities,
+      req.signal,
+      async (q, index) => {
+        const release = await previewSemaphore.acquire(req.signal);
+        try {
+          const name = `cmp-${hashRel(file.rel)}-${stamp}-${format}-q${q}-s${speed}.${spec.ext}`;
+          const out = path.join(outDir, name);
+          const partOut = path.join(outDir, `part-${process.pid}-${Date.now()}-${name}`);
 
-      let displayName = name;
-      if (!browserCanRenderVariant) {
-        const proxyName = `${name}.png`;
-        const proxyOut = path.join(outDir, proxyName);
-        await new Promise<void>((resolve) => {
-          const c = spawn(
-            magick.path,
-            [`${out}[0]`, "-auto-orient", "-colorspace", "sRGB", `PNG:${proxyOut}`],
-            { windowsHide: true, stdio: "ignore", env: { ...process.env, MAGICK_THREAD_LIMIT: "1" } },
-          );
-          c.on("close", () => resolve());
-          c.on("error", () => resolve());
-        });
-        if (existsSync(proxyOut)) {
-          displayName = proxyName;
+          let size = 0;
+          try {
+            const st = await stat(out);
+            size = st.size;
+          } catch { /* not cached yet */ }
+
+          if (size === 0) {
+            try {
+              size = await runMagickAtomic(
+                magick.path,
+                partOut,
+                out,
+                (target) => buildEncoderArgs({ srcArg, out: target, format, quality: q, speed }),
+                req.signal,
+                45_000,
+              );
+            } catch (err) {
+              if (req.signal.aborted) return;
+              errors.push(`q${q}: ${(err as Error).message}`);
+              return;
+            }
+          }
+
+          let displayName = name;
+          if (!browserCanRenderVariant) {
+            const proxyName = `${name}.png`;
+            const proxyOut = path.join(outDir, proxyName);
+            const partProxy = path.join(outDir, `part-${process.pid}-${Date.now()}-${proxyName}`);
+            if (!existsSync(proxyOut)) {
+              try {
+                await runMagickAtomic(
+                  magick.path,
+                  partProxy,
+                  proxyOut,
+                  (target) => [`${out}[0]`, "-auto-orient", "-colorspace", "sRGB", `PNG:${target}`],
+                  req.signal,
+                  30_000,
+                );
+              } catch (err) {
+                if (req.signal.aborted) return;
+                errors.push(`q${q} preview decode: ${(err as Error).message}`);
+                return;
+              }
+            }
+            displayName = proxyName;
+          }
+
+          orderedVariants[index] = {
+            quality: q,
+            label: qualityDisplay(format, q),
+            url: `/preview-cache/${displayName}`,
+            bytes: size,
+          };
+        } finally {
+          release();
         }
-      }
+      },
+      () => req.signal.aborted,
+      () => 2,
+    );
 
-      variants.push({
-        quality: q,
-        label: qualityDisplay(format, q),
-        url: `/preview-cache/${displayName}`,
-        bytes: size,
-      });
-    }
+    if (req.signal.aborted) throw new HttpError(499, "Cancelled");
+    const variants = orderedVariants.filter((v): v is NonNullable<typeof v> => v !== null);
 
     return json({
       rel: file.rel,
       format,
       formatLabel: spec.label,
-      originalUrl: `/api/source-file?rel=${encodeURIComponent(file.rel)}`,
+      originalUrl: `/api/source-file?rel=${encodeURIComponent(file.rel)}${originalNeedsProxy ? "&proxy=1" : ""}`,
       originalBytes: file.size,
       originalExt: file.ext,
       mtime: file.mtime,
@@ -863,9 +969,12 @@ async function handleApi(pathname: string, req: Request, url: URL): Promise<Resp
     if (!file) throw new HttpError(404, "Not in scan.");
 
     const ext = file.ext.toLowerCase();
+    const forceProxy = url.searchParams.get("proxy") === "1";
+    const accept = req.headers.get("accept") ?? "";
+    const browserLacksAvif = ext === "avif" && accept.includes("image/") && !accept.includes("image/avif");
 
     // 1. Browser-native formats (JPG, PNG, WebP, AVIF, GIF, BMP): serve directly
-    if (NATIVE_IMAGE_EXTS.has(ext)) {
+    if (NATIVE_IMAGE_EXTS.has(ext) && !forceProxy && !browserLacksAvif) {
       if (file.size > MAX_PASSTHROUGH_BYTES) {
         throw new HttpError(
           413,
@@ -893,41 +1002,15 @@ async function handleApi(pathname: string, req: Request, url: URL): Promise<Resp
         const release = await previewSemaphore.acquire(req.signal);
         try {
           if (!existsSync(origCachePath)) {
-            await new Promise<void>((resolve, reject) => {
-              const child = spawn(
-                magick.path,
-                [
-                  `${file.abs}[0]`,
-                  "-auto-orient",
-                  "-colorspace",
-                  "sRGB",
-                  "-quality",
-                  "96",
-                  `JPEG:${origCachePath}`,
-                ],
-                { windowsHide: true, stdio: "ignore" },
-              );
-              const onAbort = () => {
-                try { child.kill(); } catch {}
-                reject(new HttpError(499, "Cancelled"));
-              };
-              req.signal.addEventListener("abort", onAbort, { once: true });
-              const timer = setTimeout(() => {
-                try { child.kill(); } catch {}
-                reject(new Error("Original preview decode timed out"));
-              }, 20_000);
-              child.on("close", (code) => {
-                clearTimeout(timer);
-                req.signal.removeEventListener("abort", onAbort);
-                if (code === 0) resolve();
-                else reject(new Error(`ImageMagick decode exited with ${code}`));
-              });
-              child.on("error", (err) => {
-                clearTimeout(timer);
-                req.signal.removeEventListener("abort", onAbort);
-                reject(err);
-              });
-            });
+            const partPath = path.join(previewCacheDir, `part-${process.pid}-${Date.now()}-${origCacheName}`);
+            await runMagickAtomic(
+              magick.path,
+              partPath,
+              origCachePath,
+              (target) => [`${file.abs}[0]`, "-auto-orient", "-colorspace", "sRGB", "-quality", "96", `JPEG:${target}`],
+              req.signal,
+              25_000,
+            );
           }
         } finally {
           release();
@@ -988,37 +1071,15 @@ async function handleApi(pathname: string, req: Request, url: URL): Promise<Resp
         const release = await previewSemaphore.acquire(req.signal);
         try {
           if (!existsSync(thumbPath)) {
-            await new Promise<void>((resolve, reject) => {
-              const child = spawn(magick.path, [
-                `${file.abs}[0]`,
-                "-auto-orient",
-                "-thumbnail", "96x96^",
-                "-gravity", "center",
-                "-extent", "96x96",
-                "-quality", "80",
-                thumbPath,
-              ], { windowsHide: true, stdio: "ignore" });
-              const onAbort = () => {
-                try { child.kill(); } catch { /* already gone */ }
-                reject(new HttpError(499, "Cancelled"));
-              };
-              req.signal.addEventListener("abort", onAbort, { once: true });
-              const timer = setTimeout(() => {
-                try { child.kill(); } catch { /* already gone */ }
-                reject(new Error("Thumbnail generation timed out"));
-              }, 8000);
-              child.on("close", (code) => {
-                clearTimeout(timer);
-                req.signal.removeEventListener("abort", onAbort);
-                if (code === 0) resolve();
-                else reject(new Error(`Thumbnail generation failed with code ${code}`));
-              });
-              child.on("error", (err) => {
-                clearTimeout(timer);
-                req.signal.removeEventListener("abort", onAbort);
-                reject(err);
-              });
-            });
+            const partPath = path.join(previewCacheDir, `part-${process.pid}-${Date.now()}-${thumbName}`);
+            await runMagickAtomic(
+              magick.path,
+              partPath,
+              thumbPath,
+              (target) => [`${file.abs}[0]`, "-auto-orient", "-thumbnail", "96x96^", "-gravity", "center", "-extent", "96x96", "-quality", "80", `JPEG:${target}`],
+              req.signal,
+              12_000,
+            );
           }
         } finally {
           release();
@@ -1051,8 +1112,11 @@ async function handleApi(pathname: string, req: Request, url: URL): Promise<Resp
     if (!file) throw new HttpError(404, "Not in scan.");
 
     const ext = file.ext.toLowerCase();
+    const forceProxy = url.searchParams.get("proxy") === "1";
+    const accept = req.headers.get("accept") ?? "";
+    const browserLacksAvif = ext === "avif" && accept.includes("image/") && !accept.includes("image/avif");
     // Directly stream browser-native formats if within size limit
-    if (NATIVE_IMAGE_EXTS.has(ext) && file.size <= MAX_PASSTHROUGH_BYTES) {
+    if (NATIVE_IMAGE_EXTS.has(ext) && !forceProxy && !browserLacksAvif && file.size <= MAX_PASSTHROUGH_BYTES) {
       return new Response(Bun.file(file.abs), {
         headers: {
           "content-type": IMAGE_MIME[ext] ?? "image/jpeg",
@@ -1105,35 +1169,17 @@ async function handleApi(pathname: string, req: Request, url: URL): Promise<Resp
       }
       const release = await previewSemaphore.acquire(req.signal);
       try {
-        await new Promise<void>((resolve, reject) => {
-          const child = spawn(magick.path, [
-            `${file.abs}[0]`,
-            "-auto-orient",
-            "-resize", "2048x2048>",
-            "-quality", "85",
+        if (!existsSync(viewPath)) {
+          const partPath = path.join(previewCacheDir, `part-${process.pid}-${Date.now()}-${viewName}`);
+          await runMagickAtomic(
+            magick.path,
+            partPath,
             viewPath,
-          ], { windowsHide: true, stdio: "ignore" });
-          const onAbort = () => {
-            try { child.kill(); } catch { /* already gone */ }
-            reject(new HttpError(499, "Cancelled"));
-          };
-          req.signal.addEventListener("abort", onAbort, { once: true });
-          const timer = setTimeout(() => {
-            try { child.kill(); } catch { /* already gone */ }
-            reject(new Error("Preview generation timed out"));
-          }, 15000);
-          child.on("close", (code) => {
-            clearTimeout(timer);
-            req.signal.removeEventListener("abort", onAbort);
-            if (code === 0) resolve();
-            else reject(new Error(`Preview generation failed with code ${code}`));
-          });
-          child.on("error", (err) => {
-            clearTimeout(timer);
-            req.signal.removeEventListener("abort", onAbort);
-            reject(err);
-          });
-        });
+            (target) => [`${file.abs}[0]`, "-auto-orient", "-resize", "2048x2048>", "-quality", "85", `JPEG:${target}`],
+            req.signal,
+            20_000,
+          );
+        }
       } finally {
         release();
       }

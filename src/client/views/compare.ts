@@ -15,6 +15,19 @@ import type { CompareResponse, CompareVariant, OutputFormat } from "../types";
 import type { ViewActions } from "./shared";
 import { emptyState } from "./shared";
 
+let avifDecodePromise: Promise<boolean> | null = null;
+const canDecodeAvif = (): Promise<boolean> => {
+  if (avifDecodePromise) return avifDecodePromise;
+  avifDecodePromise = new Promise<boolean>((resolve) => {
+    const probe = new Image();
+    probe.onload = () => resolve(probe.naturalWidth > 0 && probe.naturalHeight > 0);
+    probe.onerror = () => resolve(false);
+    probe.src =
+      "data:image/avif;base64,AAAAIGZ0eXBhdmlmAAAAAGF2aWZtaWYxbWlhZk1BMUIAAADybWV0YQAAAAAAAAAoaGRscgAAAAAAAAAAcGljdAAAAAAAAAAAAAAAAGxpYmF2aWYAAAAADnBpdG0AAAAAAAEAAAAeaWxvYwAAAABEAAABAAEAAAABAAABGgAAAB0AAAAoaWluZgAAAAAAAQAAABppbmZlAgAAAAABAABhdjAxQ29sb3IAAAAAamlwcnAAAABLaXBjbwAAABRpc3BlAAAAAAAAAAIAAAACAAAAEHBpeGkAAAAAAwgICAAAAAxhdjFDgQ0MAAAAABNjb2xybmNseAACAAIAAYAAAAAXaXBtYQAAAAAAAAABAAEEAQKDBAAAACVtZGF0EgAKCBgANogQEAwgMg8f8D///8WfhwB8+ErK42A=";
+  });
+  return avifDecodePromise;
+};
+
 /** Format seconds as M:SS for the frame scrubber. */
 const fmtTime = (sec: number): string => {
   const s = Math.max(0, Math.floor(sec));
@@ -30,7 +43,8 @@ export type CompareViewController = {
 export function createCompareView(actions: ViewActions): CompareViewController {
   let split = 50;
   let dimensions: { width: number; height: number } | null = null;
-  let busy = false;
+  let activeRunSeq = 0;
+  let compareAbort: AbortController | null = null;
   let compareBg: "checker" | "dark" | "light" = "checker";
   let activeFormat: OutputFormat = state.currentFormat;
   let isDraggingSplitter = false;
@@ -96,7 +110,7 @@ export function createCompareView(actions: ViewActions): CompareViewController {
 
   const renderFacts = (data: CompareResponse, _variant: CompareVariant | undefined): void => {
     const origExt = data.originalExt ? data.originalExt.replace(/^\./, "").toUpperCase() : "JPEG";
-    const dimText = dimensions ? `${dimensions.width} × ${dimensions.height}` : "4032 × 3024";
+    const dimText = dimensions ? `${dimensions.width} × ${dimensions.height}` : "Loading…";
     const dateText = formatDate(data.mtime);
     const pathText = data.rel;
 
@@ -193,11 +207,15 @@ export function createCompareView(actions: ViewActions): CompareViewController {
     let stageHtml = "";
 
     // Image Panes
+    const splitClip =
+      state.compareMode === "split"
+        ? `-webkit-clip-path: inset(0 0 0 ${split}%); clip-path: inset(0 0 0 ${split}%);`
+        : "";
     stageHtml += `
       <div class="compare-pane original${state.compareMode === "toggle" && !showOriginal ? " hidden" : ""}">
         <img src="${escapeHtml(data.originalUrl)}" alt="Original" draggable="false" style="${scale}">
       </div>
-      <div class="compare-pane variant" style="${state.compareMode === "split" ? `clip-path: inset(0 0 0 ${split}%);` : ""}">
+      <div class="compare-pane variant${state.compareMode === "toggle" && showOriginal ? " hidden" : ""}" style="${splitClip}">
         <img src="${escapeHtml(variant.url)}" alt="${escapeHtml(variant.label)} variant" draggable="false" style="${scale}">
       </div>
     `;
@@ -323,8 +341,19 @@ export function createCompareView(actions: ViewActions): CompareViewController {
             renderFacts(data, variant);
           }
         });
+        img.addEventListener("error", () => {
+          const p = document.createElement("p");
+          p.textContent = "Failed to decode original image preview.";
+          $("compareErrors").append(p);
+        });
       }
     }
+    const varImg = stage.querySelector<HTMLImageElement>(".compare-pane.variant img");
+    varImg?.addEventListener("error", () => {
+      const p = document.createElement("p");
+      p.textContent = `Failed to decode ${data.formatLabel} q${variant.quality} preview.`;
+      $("compareErrors").append(p);
+    });
   };
 
   const updateSplitterPosition = (pct: number): void => {
@@ -340,7 +369,9 @@ export function createCompareView(actions: ViewActions): CompareViewController {
     }
     const variantPane = stage.querySelector<HTMLElement>(".compare-pane.variant");
     if (variantPane) {
-      variantPane.style.clipPath = `inset(0 0 0 ${split}%)`;
+      const clip = `inset(0 0 0 ${split}%)`;
+      variantPane.style.setProperty("-webkit-clip-path", clip);
+      variantPane.style.clipPath = clip;
     }
   };
 
@@ -467,8 +498,10 @@ export function createCompareView(actions: ViewActions): CompareViewController {
     format?: OutputFormat,
     timestampSec?: number,
   ): Promise<void> => {
-    if (busy) return;
-    busy = true;
+    const seq = ++activeRunSeq;
+    compareAbort?.abort();
+    const controller = new AbortController();
+    compareAbort = controller;
     state.compareRel = rel;
     if (format) activeFormat = format;
     dimensions = null;
@@ -485,7 +518,14 @@ export function createCompareView(actions: ViewActions): CompareViewController {
     $("compareRail").classList.add("hidden");
 
     try {
-      const data = await actions.runCompare(rel, activeFormat, timestampSec);
+      const baseNative = ["jpg", "jpeg", "jpe", "jfif", "png", "gif", "bmp", "webp"];
+      const nativeFormats = (await canDecodeAvif()) ? [...baseNative, "avif"] : baseNative;
+      if (seq !== activeRunSeq || controller.signal.aborted) return;
+      const data = await actions.runCompare(rel, activeFormat, timestampSec, {
+        signal: controller.signal,
+        nativeFormats,
+      });
+      if (seq !== activeRunSeq || controller.signal.aborted) return;
       state.compare = data;
       if (!data.variants.length) {
         renderEmpty(
@@ -496,10 +536,11 @@ export function createCompareView(actions: ViewActions): CompareViewController {
       }
       renderStage();
     } catch (error) {
+      if (seq !== activeRunSeq || controller.signal.aborted || (error as Error)?.name === "AbortError") return;
       state.compare = null;
       renderEmpty("Could not compare this file", (error as Error).message);
     } finally {
-      busy = false;
+      if (compareAbort === controller) compareAbort = null;
     }
   };
 
@@ -533,6 +574,9 @@ export function createCompareView(actions: ViewActions): CompareViewController {
   };
 
   const close = (): void => {
+    activeRunSeq++;
+    compareAbort?.abort();
+    compareAbort = null;
     actions.switchView("workspace");
   };
 

@@ -39,7 +39,12 @@ export type ViewActions = {
   startRun: (opts?: { onlyNew?: boolean }) => Promise<void>;
   undoManifest: (id: string, summary?: ManifestSummary) => Promise<void>;
   verifyJob: (jobId: string) => Promise<VerifyResponse>;
-  runCompare: (rel: string, format?: OutputFormat, timestampSec?: number) => Promise<CompareResponse>;
+  runCompare: (
+    rel: string,
+    format?: OutputFormat,
+    timestampSec?: number,
+    opts?: { signal?: AbortSignal; nativeFormats?: string[] },
+  ) => Promise<CompareResponse>;
   selectedFiles: () => ScannedFile[];
   setQuality: (quality: number, format?: OutputFormat) => void;
   checkMagick: (force?: boolean) => Promise<UpdateStatus>;
