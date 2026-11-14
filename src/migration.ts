@@ -6,6 +6,7 @@
  */
 import { cpSync, existsSync, mkdirSync, readdirSync } from "node:fs";
 import path from "node:path";
+import { pathKey } from "./platform.ts";
 
 export type MigrationSummary = {
   migratedMagick: boolean;
@@ -27,17 +28,26 @@ export function getLegacyDataCandidates(appDataRoot?: string): string[] {
   if (roaming) {
     candidates.push(path.join(roaming, "picmagick-gui"));
     candidates.push(path.join(roaming, "PicMagick GUI"));
+    for (const ch of ["stable", "canary"]) {
+      candidates.push(path.join(roaming, "com.github.esconer.picmagick-gui", ch));
+    }
   }
   if (local) {
     candidates.push(path.join(local, "picmagick-gui"));
     candidates.push(path.join(local, "PicMagick GUI"));
     candidates.push(path.join(local, "com.github.esconer.picmagick-gui"));
+    for (const ch of ["stable", "canary"]) {
+      candidates.push(path.join(local, "com.github.esconer.picmagick-gui", ch));
+    }
   }
   if (home) {
     candidates.push(path.join(home, ".config", "picmagick-gui"));
     candidates.push(path.join(home, ".config", "PicMagick GUI"));
     candidates.push(path.join(home, ".local", "share", "picmagick-gui"));
     candidates.push(path.join(home, ".local", "share", "PicMagick GUI"));
+    for (const ch of ["stable", "canary"]) {
+      candidates.push(path.join(home, ".local", "share", "com.github.esconer.picmagick-gui", ch));
+    }
     candidates.push(path.join(home, "Library", "Application Support", "picmagick-gui"));
     candidates.push(path.join(home, "Library", "Application Support", "PicMagick GUI"));
   }
@@ -46,7 +56,7 @@ export function getLegacyDataCandidates(appDataRoot?: string): string[] {
   const seen = new Set<string>();
   const unique: string[] = [];
   for (const c of candidates) {
-    const norm = path.resolve(c).toLowerCase();
+    const norm = pathKey(path.resolve(c));
     if (!seen.has(norm)) {
       seen.add(norm);
       unique.push(c);
@@ -75,7 +85,7 @@ export function migrateLegacyData(
 
   for (const candidate of candidates) {
     if (!candidate || !existsSync(candidate)) continue;
-    if (path.resolve(candidate).toLowerCase() === resolvedTarget.toLowerCase()) continue;
+    if (pathKey(path.resolve(candidate)) === pathKey(resolvedTarget)) continue;
 
     try {
       // 1. ImageMagick

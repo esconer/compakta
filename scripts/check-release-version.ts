@@ -8,6 +8,7 @@
  */
 import pkg from "../package.json";
 import config from "../electrobun.config.ts";
+import { APP_VERSION } from "../src/version.ts";
 
 const isTag =
   process.env.GITHUB_REF_TYPE === "tag" ||
@@ -16,10 +17,10 @@ const tag = isTag ? process.env.GITHUB_REF_NAME?.replace(/^v/, "") : undefined;
 const packageVersion = pkg.version;
 const appVersion = config.app.version;
 
-if (packageVersion !== appVersion) {
+if (packageVersion !== appVersion || packageVersion !== APP_VERSION) {
   console.error(
     `Version mismatch: package.json=${packageVersion} ` +
-      `electrobun.config.ts=${appVersion}`,
+      `electrobun.config.ts=${appVersion} src/version.ts=${APP_VERSION}`,
   );
   process.exit(1);
 }
@@ -32,9 +33,9 @@ if (!tag) {
 if (tag !== packageVersion) {
   console.error(
     `Version mismatch: tag=${tag} package.json=${packageVersion} ` +
-      `electrobun.config.ts=${appVersion}`,
+      `electrobun.config.ts=${appVersion} src/version.ts=${APP_VERSION}`,
   );
   process.exit(1);
 }
 
-console.log(`Release version ${tag} matches package.json and electrobun.config.ts.`);
+console.log(`Release version ${tag} matches package.json, electrobun.config.ts, and src/version.ts.`);

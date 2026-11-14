@@ -6,6 +6,7 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { installLatest } from "../src/imagemagick.ts";
 import { findMagick } from "../src/paths.ts";
+import { pathKey } from "../src/platform.ts";
 
 process.env.COMPAKTA_FORCE_BUNDLE = "1";
 process.env.PICMAGIK_FORCE_BUNDLE = "1";
@@ -35,7 +36,8 @@ console.log("Checking for ImageMagick in", MAGICK_DIR);
 let usable = false;
 try {
   const info = findMagick();
-  if (info.path && path.resolve(info.path).startsWith(MAGICK_DIR)) {
+  const magickRoot = pathKey(MAGICK_DIR) + path.sep;
+  if (info.path && info.avifWritable && pathKey(path.resolve(info.path)).startsWith(magickRoot)) {
     console.log(`Found existing ImageMagick ${info.version} at ${info.path}`);
     usable = true;
   }

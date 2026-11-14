@@ -21,8 +21,10 @@ export function getTotalCpus(): number {
  *  100% -> 8 cores -> mask 0xFFn (0b11111111)
  */
 export function calculateAffinityMask(percent: number, rawTotalCpus = getTotalCpus()): bigint {
-  const totalCpus = Math.max(1, Math.min(64, rawTotalCpus));
-  const pct = Math.max(10, Math.min(100, Math.round(percent) || 70));
+  const safeCpus = Number.isFinite(rawTotalCpus) ? rawTotalCpus : 1;
+  const totalCpus = Math.max(1, Math.min(64, Math.floor(safeCpus)));
+  const safePct = Number.isFinite(percent) ? percent : 70;
+  const pct = Math.max(10, Math.min(100, Math.round(safePct) || 70));
   if (pct >= 100) {
     return (1n << BigInt(totalCpus)) - 1n;
   }
@@ -82,8 +84,8 @@ if (process.platform === "win32") {
   }
 }
 
-// PROCESS_ALL_ACCESS = 0x1F0FFF (or PROCESS_SET_INFORMATION | PROCESS_QUERY_INFORMATION)
-const PROCESS_AFFINITY_ACCESS = 0x1F0FFF;
+// Minimal rights required for SetProcessAffinityMask (avoids UAC/AV heuristics)
+const PROCESS_AFFINITY_ACCESS = 0x0200 | 0x1000;
 // PROCESS_SUSPEND_RESUME = 0x0800
 const PROCESS_SUSPEND_RESUME = 0x0800;
 
@@ -163,11 +165,12 @@ export function resumeProcess(pid: number | undefined): boolean {
  */
 export function applyProcessCpuLimit(pid: number | undefined, percent: number): boolean {
   if (!pid || pid <= 0) return false;
+  const clampedPct = Number.isFinite(percent) ? Math.max(10, Math.min(100, Math.round(percent))) : 70;
   let success = false;
 
   if (k32) {
     try {
-      const mask = calculateAffinityMask(percent);
+      const mask = calculateAffinityMask(clampedPct);
       const handle = k32.symbols.OpenProcess(PROCESS_AFFINITY_ACCESS, false, pid);
       if (handle) {
         success = Boolean(k32.symbols.SetProcessAffinityMask(handle, mask));
@@ -181,8 +184,10 @@ export function applyProcessCpuLimit(pid: number | undefined, percent: number): 
   if (process.platform === "linux") {
     try {
       const total = getTotalCpus();
-      const allowed = Math.max(1, Math.min(total, Math.floor(total * (percent / 100))));
-      spawn("taskset", ["-pc", `0-${allowed - 1}`, String(pid)], { stdio: "ignore" }).unref();
+      const allowed = Math.max(1, Math.min(total, Math.floor(total * (clampedPct / 100))));
+      const child = spawn("taskset", ["-pc", `0-${allowed - 1}`, String(pid)], { stdio: "ignore" });
+      child.on("error", () => {});
+      child.unref();
       success = true;
     } catch {
       // Fallback silently if taskset is not installed

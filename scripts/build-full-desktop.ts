@@ -26,4 +26,4 @@ const build = spawnSync("bun", ["run", "desktop:build"], {
   },
 });
 
-process.exit(build.status ?? 0);
+process.exit(build.status ?? 1);

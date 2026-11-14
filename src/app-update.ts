@@ -12,7 +12,7 @@
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { BUNDLED_MAGICK_DIR, DATA_ROOT, MAGICK_DIR } from "./appdirs.ts";
@@ -60,6 +60,7 @@ export type AppUpdateStatus = {
   checkedAt: number | null;
   error: string | null;
   isDesktop: boolean;
+  dismissed?: boolean;
 };
 
 let cachedRelease: { at: number; data: any } | null = null;
@@ -154,44 +155,53 @@ function findInstallerFile(dir: string): string | null {
   return null;
 }
 
-function extractAppArchive(archive: string, destDir: string): void {
-  mkdirSync(destDir, { recursive: true });
+function runAsync(cmd: string, args: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, args, { stdio: "ignore", windowsHide: true });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`${cmd} exited with code ${code}`));
+    });
+  });
+}
+
+async function extractAppArchive(archive: string, destDir: string): Promise<void> {
+  await mkdir(destDir, { recursive: true });
   if (IS_WINDOWS) {
     const sys = process.env.SystemRoot ?? "C:\\Windows";
     const tarExe = path.join(sys, "System32", "tar.exe");
     try {
-      execFileSync(tarExe, ["-xf", archive, "-C", destDir], {
-        stdio: "ignore",
-        windowsHide: true,
-      });
+      await runAsync(tarExe, ["-xf", archive, "-C", destDir]);
       return;
     } catch {
       // Fallback: PowerShell Expand-Archive
       const safeArchive = archive.replace(/'/g, "''");
       const safeDest = destDir.replace(/'/g, "''");
-      execFileSync("powershell.exe", [
+      await runAsync("powershell.exe", [
         "-NoProfile",
         "-NonInteractive",
         "-Command",
         `Expand-Archive -LiteralPath '${safeArchive}' -DestinationPath '${safeDest}' -Force`,
-      ], {
-        stdio: "ignore",
-        windowsHide: true,
-      });
+      ]);
       return;
     }
   } else {
-    execFileSync("tar", ["-xf", archive, "-C", destDir], {
-      stdio: "ignore",
-    });
+    await runAsync("tar", ["-xf", archive, "-C", destDir]);
   }
 }
 
-/**
- * Check GitHub for a new Compakta release.
- * Checks esconer/compakta first; falls back to esconer/picmagick-gui if not found.
- */
-export async function checkAppUpdate(force = false): Promise<AppUpdateStatus> {
+let activeCheck: Promise<AppUpdateStatus> | null = null;
+
+export function checkAppUpdate(force = false): Promise<AppUpdateStatus> {
+  if (activeCheck) return activeCheck;
+  activeCheck = doCheckAppUpdate(force).finally(() => {
+    activeCheck = null;
+  });
+  return activeCheck;
+}
+
+async function doCheckAppUpdate(force = false): Promise<AppUpdateStatus> {
   // If download is actively running or ready, keep returning current state
   if (state.stage === "downloading" || state.stage === "ready") {
     return { ...state };
@@ -254,16 +264,23 @@ export async function checkAppUpdate(force = false): Promise<AppUpdateStatus> {
     state.assetName = picked?.name ?? null;
     state.totalBytes = picked?.size ?? 0;
     state.isDesktop = Boolean(process.env.COMPAKTA_DESKTOP || process.env.PICMAGIK_DESKTOP);
+    state.dismissed = Boolean(dismissedVersion && dismissedVersion === version);
 
     // Check if installer is already downloaded from previous check
     const existingInstaller = findInstallerFile(EXTRACT_DIR);
     if (existingInstaller && newer) {
-      state.stage = "ready";
-      state.updateAvailable = true;
-      state.installerPath = existingInstaller;
-      state.percent = 100;
-      state.message = `Update v${version} is downloaded and ready to apply.`;
-      return { ...state };
+      let extractedVer = "";
+      try {
+        extractedVer = (await readFile(path.join(EXTRACT_DIR, ".version"), "utf8")).trim();
+      } catch {}
+      if (extractedVer === version) {
+        state.stage = "ready";
+        state.updateAvailable = true;
+        state.installerPath = existingInstaller;
+        state.percent = 100;
+        state.message = `Update v${version} is downloaded and ready to apply.`;
+        return { ...state };
+      }
     }
 
     if (newer && picked) {
@@ -364,13 +381,16 @@ export async function downloadAppUpdate(): Promise<void> {
       state.message = "Extracting installer package…";
 
       // Extract archive
-      extractAppArchive(archivePath, EXTRACT_DIR);
+      await extractAppArchive(archivePath, EXTRACT_DIR);
 
       // Locate installer
       const installer = findInstallerFile(EXTRACT_DIR);
       if (!installer) {
         throw new Error("Installer executable was not found inside the update package.");
       }
+
+      await writeFile(path.join(EXTRACT_DIR, ".version"), `${state.latestVersion}\n`, "utf8");
+      await rm(archivePath, { force: true }).catch(() => {});
 
       state.installerPath = installer;
       state.stage = "ready";

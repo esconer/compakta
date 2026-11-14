@@ -17,7 +17,7 @@ import { chmod, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/
 import path from "node:path";
 
 import { IS_LINUX, IS_WINDOWS, pathKey } from "./platform.ts";
-import { findMagick, runMagickFile, type MagickInfo } from "./paths.ts";
+import { findMagick, invalidateMagickCache, runMagickFile, type MagickInfo } from "./paths.ts";
 import { compareVersions, isNewerVersion, parseVersion } from "./version.ts";
 import { MAGICK_DIR, BUNDLED_MAGICK_DIR } from "./appdirs.ts";
 
@@ -275,10 +275,12 @@ export function isManagedInstall(p: string | null | undefined): boolean {
   if (!p) return false;
   const target = pathKey(path.resolve(p));
   const root = pathKey(path.resolve(IMAGEMAGICK_ROOT));
-  if (target.startsWith(root + path.sep)) return true;
+  const rootPrefix = root.endsWith(path.sep) ? root : root + path.sep;
+  if (target.startsWith(rootPrefix)) return true;
   if (BUNDLED_MAGICK_DIR) {
     const bundledRoot = pathKey(path.resolve(BUNDLED_MAGICK_DIR));
-    if (target.startsWith(bundledRoot + path.sep)) return true;
+    const bundledPrefix = bundledRoot.endsWith(path.sep) ? bundledRoot : bundledRoot + path.sep;
+    if (target.startsWith(bundledPrefix)) return true;
   }
   return false;
 }
@@ -473,6 +475,18 @@ export async function installLatest(): Promise<InstallResult> {
       };
     });
 
+    progress = { ...progress, stage: "verifying", message: "Checking the download…", percent: 100 };
+    const expectedDigest = sha256Digest(release.asset.digest);
+    if (release.asset.digest && !expectedDigest) {
+      console.warn(`Ignoring unsupported GitHub digest format for ${archive}.`);
+    }
+    if (expectedDigest) {
+      const actual = await sha256File(archive);
+      if (actual !== expectedDigest) {
+        throw new Error("The downloaded ImageMagick archive failed its SHA-256 check.");
+      }
+    }
+
     progress = { ...progress, stage: "extracting", message: "Extracting the portable build…", percent: 100 };
     extractArchive(archive, staging);
 
@@ -495,6 +509,7 @@ export async function installLatest(): Promise<InstallResult> {
 
     if (backup) await rm(backup, { recursive: true, force: true }).catch(() => {});
     await pruneManagedVersions(folderName);
+    invalidateMagickCache();
 
     progress = {
       running: false,
@@ -779,6 +794,8 @@ async function installLatestAppImage(): Promise<InstallResult> {
       await rm(backup, { force: true }).catch(() => {});
       backup = null;
     }
+
+    invalidateMagickCache();
 
     progress = {
       running: false,

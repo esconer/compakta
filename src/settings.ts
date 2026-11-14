@@ -4,7 +4,7 @@
  * Restores the user's last source folder, destination, budget, and photo/video
  * recipes on startup unless overridden by environment variables.
  */
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DATA_ROOT } from "./appdirs.ts";
 import type { Policy } from "./policy.ts";
@@ -30,23 +30,26 @@ export function loadPersistedSettings(): PersistedSettings {
       const parsed = JSON.parse(readFileSync(SETTINGS_FILE, "utf8"));
       if (parsed && typeof parsed === "object") {
         currentSettings = parsed as PersistedSettings;
-        return currentSettings;
+        return { ...currentSettings };
       }
     }
   } catch {
     /* ignore unreadable settings file */
   }
   currentSettings = {};
-  return currentSettings;
+  return {};
 }
 
 export function savePersistedSettings(patch: Partial<PersistedSettings>): void {
   const prev = loadPersistedSettings();
   currentSettings = { ...prev, ...patch };
+  const tmpFile = `${SETTINGS_FILE}.tmp-${process.pid}`;
   try {
     mkdirSync(DATA_ROOT, { recursive: true });
-    writeFileSync(SETTINGS_FILE, JSON.stringify(currentSettings, null, 2), "utf8");
+    writeFileSync(tmpFile, JSON.stringify(currentSettings, null, 2), "utf8");
+    renameSync(tmpFile, SETTINGS_FILE);
   } catch {
+    try { rmSync(tmpFile, { force: true }); } catch { /* ignore */ }
     /* ignore write failures in read-only environments */
   }
 }

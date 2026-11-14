@@ -119,7 +119,7 @@ export function runMagickFile(
   try {
     return execFileSync(exe, args, options);
   } catch (err) {
-    if (!isAppImage(exe)) throw err;
+    if (!isAppImage(exe) || process.env.APPIMAGE_EXTRACT_AND_RUN === "1") throw err;
     const out = execFileSync(exe, args, {
       ...options,
       env: { ...process.env, APPIMAGE_EXTRACT_AND_RUN: "1" },
@@ -228,9 +228,12 @@ function candidateMagickPaths(): string[] {
     // 4. Standard install locations.
     const pf = process.env["ProgramFiles"];
     const pfx = process.env["ProgramFiles(x86)"];
-    if (pf) out.push(path.join(pf, "ImageMagick-7.1.2-Q16-HDRI", MAGICK_BIN));
-    if (pf) out.push(path.join(pf, "ImageMagick-7.1.2-Q16", MAGICK_BIN));
-    if (pfx) out.push(path.join(pfx, "ImageMagick-7.1.2-Q16-HDRI", MAGICK_BIN));
+    for (const root of [pf, pfx]) {
+      if (!root) continue;
+      for (const name of readdirSafe(root)) {
+        if (/^ImageMagick-7\./i.test(name)) out.push(path.join(root, name, MAGICK_BIN));
+      }
+    }
     // 5. Whatever is on PATH.
     out.push(MAGICK_BIN);
     out.push("magick");
@@ -264,7 +267,17 @@ function readdirSafe(dir: string): string[] {
   }
 }
 
-export function findMagick(): MagickInfo {
+let magickCache: { at: number; info: MagickInfo } | null = null;
+const MAGICK_CACHE_TTL_MS = 30_000;
+
+export function invalidateMagickCache(): void {
+  magickCache = null;
+}
+
+export function findMagick(force = false): MagickInfo {
+  if (!force && magickCache && Date.now() - magickCache.at < MAGICK_CACHE_TTL_MS) {
+    return magickCache.info;
+  }
   const tried = candidateMagickPaths();
   const rejected: string[] = [];
 
@@ -287,7 +300,7 @@ export function findMagick(): MagickInfo {
       const support = parseFormatSupport(formats);
       const avif = support.avif;
 
-      return {
+      const info: MagickInfo = {
         path: candidate,
         // Keep the build and architecture, but not the redundant "ImageMagick"
         // prefix. The UI already labels the row.
@@ -297,6 +310,8 @@ export function findMagick(): MagickInfo {
         avifWritable: avif.writable,
         libheif: avif.detail,
       };
+      magickCache = { at: Date.now(), info };
+      return info;
     } catch (err) {
       if (isBare) continue; // not on PATH, keep looking
       continue;
@@ -336,7 +351,8 @@ export function assertDestinationSafe(source: string, destination: string): void
   if (dst === src) {
     throw new Error("Destination cannot be the source folder.");
   }
-  if (dst.startsWith(src + path.sep)) {
+  const prefix = src.endsWith(path.sep) ? src : src + path.sep;
+  if (dst.startsWith(prefix)) {
     throw new Error(
       `Destination "${destination}" is inside the source folder "${source}".\n` +
         `Choose a sibling folder instead, e.g. ${IS_WINDOWS ? "D:\\Photos-avif" : `${source}-avif`}`,
@@ -353,11 +369,16 @@ export function assertDestinationSafe(source: string, destination: string): void
  */
 export async function freeSpace(p: string): Promise<number | null> {
   const { statfs } = await import("node:fs/promises");
-  try {
-    const s = await statfs(p);
-    return Number(s.bsize) * Number(s.bavail);
-  } catch {
-    // Fall through to the slow path only if the syscall is unavailable.
+  let target = path.resolve(p);
+  while (true) {
+    try {
+      const s = await statfs(target);
+      return Number(s.bsize) * Number(s.bavail);
+    } catch {
+      const parent = path.dirname(target);
+      if (parent === target) break;
+      target = parent;
+    }
   }
 
   if (!IS_WINDOWS) return null;

@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "picmagick-gui",
+      "name": "compakta",
       "devDependencies": {
         "@types/bun": "latest",
         "@types/node": "^26.6.5",
