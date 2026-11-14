@@ -53,7 +53,28 @@ export type VideoRunOptions = {
 function partPathFor(finalOut: string): string {
   const ext = path.extname(finalOut);
   const base = finalOut.slice(0, finalOut.length - ext.length);
-  return `${base}.part${ext}`;
+  return `${base}.part-${process.pid}${ext}`;
+}
+
+async function atomicCopyFile(
+  src: string,
+  dest: string,
+  mtime: number,
+  signal: AbortSignal,
+): Promise<number> {
+  await mkdir(path.dirname(dest), { recursive: true });
+  const part = partPathFor(dest);
+  try {
+    await copyFile(src, part);
+    if (signal.aborted) throw new Error("aborted");
+    const st = await stat(part);
+    await rename(part, dest);
+    const d = new Date(mtime);
+    await utimes(dest, d, d).catch(() => {});
+    return st.size;
+  } finally {
+    await rm(part, { force: true }).catch(() => {});
+  }
 }
 
 async function overwriteOk(out: string, overwrite: boolean): Promise<boolean> {
@@ -215,17 +236,13 @@ async function processOneVideo(
       if (!(await overwriteOk(out, o.overwrite))) {
         return { ...base, out, status: "skipped", seconds: (Date.now() - started) / 1000 };
       }
-      await mkdir(path.dirname(out), { recursive: true });
-      await copyFile(src, out);
-      const copyMtime = new Date(d.file.mtime);
-      await utimes(out, copyMtime, copyMtime).catch(() => {});
-      const st = await stat(out);
+      const copiedBytes = await atomicCopyFile(src, out, d.file.mtime, o.signal);
       return {
         ...base,
         out,
         status: "copied",
         seconds: (Date.now() - started) / 1000,
-        outBytes: st.size,
+        outBytes: copiedBytes,
       };
     }
 
@@ -269,17 +286,13 @@ async function processOneVideo(
         if (!(await overwriteOk(copyOut, o.overwrite))) {
           return { ...base, out: copyOut, status: "skipped", seconds: (Date.now() - started) / 1000 };
         }
-        await mkdir(path.dirname(copyOut), { recursive: true });
-        await copyFile(src, copyOut);
-        const efficientMtime = new Date(d.file.mtime);
-        await utimes(copyOut, efficientMtime, efficientMtime).catch(() => {});
-        const st = await stat(copyOut);
+        const copiedBytes = await atomicCopyFile(src, copyOut, d.file.mtime, o.signal);
         return {
           ...base,
           out: copyOut,
           status: "copied",
           seconds: (Date.now() - started) / 1000,
-          outBytes: st.size,
+          outBytes: copiedBytes,
         };
       }
     }
@@ -382,17 +395,13 @@ async function processOneVideo(
           seconds: (Date.now() - started) / 1000,
         };
       }
-      await mkdir(path.dirname(copyOut), { recursive: true });
-      await copyFile(src, copyOut);
-      const guardMtime = new Date(d.file.mtime);
-      await utimes(copyOut, guardMtime, guardMtime).catch(() => {});
-      const origSt = await stat(copyOut);
+      const copiedBytes = await atomicCopyFile(src, copyOut, d.file.mtime, o.signal);
       return {
         ...base,
         out: copyOut,
         status: "copied",
         seconds: (Date.now() - started) / 1000,
-        outBytes: origSt.size,
+        outBytes: copiedBytes,
       };
     }
 
@@ -409,6 +418,9 @@ async function processOneVideo(
       outBytes: st.size,
     };
   } catch (err) {
+    if (o.signal.aborted) {
+      return { ...base, status: "cancelled", seconds: (Date.now() - started) / 1000 };
+    }
     return {
       ...base,
       status: "failed",

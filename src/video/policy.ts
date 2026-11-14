@@ -189,14 +189,20 @@ export function videoOutputPathFor(
   return path.join(effectiveDest, dir, `${base}${decision.outStemSuffix ?? ""}.${outExt}`);
 }
 
+const SLASH_LIKE = /[\u002F\u005C\u2044\u2215\u29F5\u29F8\uFF0F\uFF3C]/g;
+
+function foldKey(s: string): string {
+  const folded = s.normalize("NFC").replace(SLASH_LIKE, "/").replace(/\/+$/, "");
+  return CASE_INSENSITIVE ? folded.toLowerCase() : folded;
+}
+
 function pathMatches(a: string, b: string): boolean {
-  return CASE_INSENSITIVE ? a.toLowerCase() === b.toLowerCase() : a === b;
+  return foldKey(a) === foldKey(b);
 }
 
 /** Fold a destination-relative path so collision keys follow platform case rules. */
 function claimKey(dir: string, name: string): string {
-  const joined = path.join(dir === "." ? "" : dir, name).replace(/[\\/]+/g, "/");
-  return CASE_INSENSITIVE ? joined.toLowerCase() : joined;
+  return foldKey(path.join(dir === "." ? "" : dir, name));
 }
 
 /**
@@ -241,16 +247,13 @@ function annotateVideoCollisions(
 
 function longestMatchingFolder(rules: string[], dir: string): number {
   if (!dir || dir === ".") return -1;
+  const normDir = foldKey(dir);
   let maxLen = -1;
   for (const r of rules) {
-    if (pathMatches(dir, r)) {
-      if (r.length > maxLen) maxLen = r.length;
-    } else if (
-      dir.length > r.length &&
-      (dir[r.length] === "/" || dir[r.length] === "\\") &&
-      pathMatches(dir.slice(0, r.length), r)
-    ) {
-      if (r.length > maxLen) maxLen = r.length;
+    if (!r) continue;
+    const normRule = foldKey(r);
+    if (normDir === normRule || normDir.startsWith(normRule + "/")) {
+      if (normRule.length > maxLen) maxLen = normRule.length;
     }
   }
   return maxLen;

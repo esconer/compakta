@@ -5,7 +5,7 @@
  * to the local ImageMagick build. The source tree is never written to.
  */
 import { existsSync } from "node:fs";
-import { readFile, readdir, rm, stat } from "node:fs/promises";
+import { readdir, rm, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -872,8 +872,7 @@ async function handleApi(pathname: string, req: Request, url: URL): Promise<Resp
           `Too large to preview in the browser: ${(file.size / 1024 ** 3).toFixed(2)} GB`,
         );
       }
-      const data = await readFile(file.abs);
-      return new Response(data, {
+      return new Response(Bun.file(file.abs), {
         headers: {
           "content-type": IMAGE_MIME[ext] ?? "image/jpeg",
           "content-length": String(file.size),
@@ -935,11 +934,11 @@ async function handleApi(pathname: string, req: Request, url: URL): Promise<Resp
         }
       }
 
-      const data = await readFile(origCachePath);
-      return new Response(data, {
+      const cached = Bun.file(origCachePath);
+      return new Response(cached, {
         headers: {
           "content-type": "image/jpeg",
-          "content-length": String(data.byteLength),
+          "content-length": String(cached.size),
           "cache-control": "no-store",
         },
       });
@@ -969,8 +968,7 @@ async function handleApi(pathname: string, req: Request, url: URL): Promise<Resp
         }
       }
       if (existsSync(pngPath)) {
-        const data = await readFile(pngPath);
-        return new Response(data, {
+        return new Response(Bun.file(pngPath), {
           headers: {
             "content-type": "image/png",
             "cache-control": "public, max-age=86400",
@@ -1026,8 +1024,7 @@ async function handleApi(pathname: string, req: Request, url: URL): Promise<Resp
           release();
         }
       } else if (IMAGE_MIME[file.ext.toLowerCase()]) {
-        const data = await readFile(file.abs);
-        return new Response(data, {
+        return new Response(Bun.file(file.abs), {
           headers: {
             "content-type": IMAGE_MIME[file.ext.toLowerCase()],
             "cache-control": "public, max-age=86400",
@@ -1038,8 +1035,7 @@ async function handleApi(pathname: string, req: Request, url: URL): Promise<Resp
       }
     }
 
-    const data = await readFile(thumbPath);
-    return new Response(data, {
+    return new Response(Bun.file(thumbPath), {
       headers: {
         "content-type": "image/jpeg",
         "cache-control": "public, max-age=86400",
@@ -1057,8 +1053,7 @@ async function handleApi(pathname: string, req: Request, url: URL): Promise<Resp
     const ext = file.ext.toLowerCase();
     // Directly stream browser-native formats if within size limit
     if (NATIVE_IMAGE_EXTS.has(ext) && file.size <= MAX_PASSTHROUGH_BYTES) {
-      const data = await readFile(file.abs);
-      return new Response(data, {
+      return new Response(Bun.file(file.abs), {
         headers: {
           "content-type": IMAGE_MIME[ext] ?? "image/jpeg",
           "cache-control": "no-store",
@@ -1076,8 +1071,7 @@ async function handleApi(pathname: string, req: Request, url: URL): Promise<Resp
           await extractVideoFramePng(ffmpeg.ffmpegPath, file.abs, 1.0, framePath);
         }
         if (existsSync(framePath)) {
-          const data = await readFile(framePath);
-          return new Response(data, {
+          return new Response(Bun.file(framePath), {
             headers: {
               "content-type": "image/png",
               "cache-control": "public, max-age=86400",
@@ -1100,8 +1094,7 @@ async function handleApi(pathname: string, req: Request, url: URL): Promise<Resp
       }
       if (!magick) {
         if (IMAGE_MIME[ext]) {
-          const data = await readFile(file.abs);
-          return new Response(data, {
+          return new Response(Bun.file(file.abs), {
             headers: {
               "content-type": IMAGE_MIME[ext],
               "cache-control": "no-store",
@@ -1146,8 +1139,7 @@ async function handleApi(pathname: string, req: Request, url: URL): Promise<Resp
       }
     }
 
-    const data = await readFile(viewPath);
-    return new Response(data, {
+    return new Response(Bun.file(viewPath), {
       headers: {
         "content-type": "image/jpeg",
         "cache-control": "public, max-age=86400",
@@ -1538,8 +1530,11 @@ async function serveStatic(pathname: string): Promise<Response> {
     const name = path.basename(pathname);
     const file = path.resolve(previewCacheDir, name);
     try {
-      const data = await readFile(file);
-      return new Response(data, {
+      const cached = Bun.file(file);
+      if (!(await cached.exists())) {
+        return new Response("not found", { status: 404 });
+      }
+      return new Response(cached, {
         headers: {
           "content-type": PREVIEW_MIME[path.extname(name).toLowerCase()]
             ?? "application/octet-stream",
@@ -1557,8 +1552,11 @@ async function serveStatic(pathname: string): Promise<Response> {
     return new Response("forbidden", { status: 403 });
   }
   try {
-    const data = await readFile(file);
-    return new Response(data, {
+    const pubFile = Bun.file(file);
+    if (!(await pubFile.exists())) {
+      return new Response("not found", { status: 404 });
+    }
+    return new Response(pubFile, {
       headers: { "content-type": MIME[path.extname(file).toLowerCase()] ?? "application/octet-stream" },
     });
   } catch {

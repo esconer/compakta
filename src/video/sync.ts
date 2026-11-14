@@ -120,7 +120,7 @@ export async function analyseVideoSync(
       }
       if (!e.isFile()) continue;
       if (e.name.startsWith(".picmagic-manifest-") || e.name.startsWith(".compakta-manifest-")) continue;
-      if (e.name.includes(".part.")) continue;
+      if (e.name.includes(".part")) continue;
 
       const ext = extOf(e.name);
       // In "merge" mode, ignore photo outputs so only orphan videos are flagged

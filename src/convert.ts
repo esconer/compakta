@@ -266,7 +266,16 @@ async function processOne(d: Decision, o: RunOptions): Promise<FileResult> {
             return { ...base, out: copyOut, status: "skipped", seconds: (Date.now() - started) / 1000 };
           }
           await mkdir(path.dirname(copyOut), { recursive: true });
-          await copyFile(src, copyOut);
+          const copyPart = partPathFor(copyOut);
+          activePart = copyPart;
+          await copyFile(src, copyPart);
+          if (o.signal.aborted) {
+            await rm(copyPart, { force: true }).catch(() => {});
+            activePart = null;
+            return { ...base, status: "cancelled", seconds: (Date.now() - started) / 1000 };
+          }
+          await rename(copyPart, copyOut);
+          activePart = null;
           const mtimeDate = new Date(d.file.mtime);
           await utimes(copyOut, mtimeDate, mtimeDate).catch(() => {});
           const origSt = await stat(copyOut);

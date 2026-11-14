@@ -10,6 +10,7 @@
  *   into persistent user storage before launching the installer.
  */
 import { execFileSync, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
@@ -40,6 +41,7 @@ export type LeanAsset = {
   name: string;
   size: number;
   url: string;
+  digest: string | null;
 };
 
 export type AppUpdateStatus = {
@@ -94,7 +96,7 @@ export function dismissAppUpdate(version?: string): void {
  * Matches Compakta packages first, falling back to legacy PicMagickGUI packages.
  */
 export function pickLeanAppAsset(
-  assets: Array<{ name?: unknown; size?: unknown; browser_download_url?: unknown }>,
+  assets: Array<{ name?: unknown; size?: unknown; browser_download_url?: unknown; digest?: unknown }>,
 ): LeanAsset | null {
   const candidates: LeanAsset[] = [];
 
@@ -103,16 +105,17 @@ export function pickLeanAppAsset(
     const name = a.name;
     const url = a.browser_download_url;
     const size = Number(a.size) || 0;
+    const digest = typeof a.digest === "string" ? a.digest : null;
 
     if (IS_WINDOWS) {
       // Matches win-x64-Compakta-Setup.zip or win-x64-PicMagickGUI-Setup.zip, excluding Full
       if (name.endsWith("-Setup.zip") && !name.includes("Full") && /win.*x64/i.test(name)) {
-        candidates.push({ name, size, url });
+        candidates.push({ name, size, url, digest });
       }
     } else if (IS_LINUX) {
       // Matches linux-x64-Compakta-Setup.tar.gz or linux-x64-PicMagickGUI-Setup.tar.gz, excluding Full
       if (name.endsWith("-Setup.tar.gz") && !name.includes("Full") && /linux.*x64/i.test(name)) {
-        candidates.push({ name, size, url });
+        candidates.push({ name, size, url, digest });
       }
     }
   }
@@ -334,18 +337,28 @@ export async function downloadAppUpdate(): Promise<void> {
       const sink = Bun.file(archivePath).writer();
       const reader = res.body.getReader();
       let received = 0;
+      const hasher = createHash("sha256");
 
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
         if (value) {
           received += value.byteLength;
+          hasher.update(value);
           await sink.write(value);
           state.downloadedBytes = received;
           state.percent = total > 0 ? Math.min(99, Math.round((received / total) * 100)) : 50;
         }
       }
       await sink.end();
+
+      if (picked.size > 0 && received !== picked.size) {
+        throw new Error(`Incomplete download: received ${received} of ${picked.size} bytes.`);
+      }
+      const expectedSha = picked.digest?.match(/^sha256:([a-f0-9]{64})$/i)?.[1]?.toLowerCase();
+      if (expectedSha && hasher.digest("hex") !== expectedSha) {
+        throw new Error("Update archive failed SHA-256 verification.");
+      }
 
       state.percent = 100;
       state.message = "Extracting installer package…";
