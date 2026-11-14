@@ -10,7 +10,7 @@ import path from "node:path";
 import type { Decision } from "./policy.ts";
 import { outputPathFor, type Policy } from "./policy.ts";
 import { buildEncoderArgs, sourceArgFor } from "./formats.ts";
-import { applyProcessCpuLimit } from "./cpu.ts";
+import { applyProcessCpuLimit, getTotalCpus } from "./cpu.ts";
 
 export type FileStatus = "converted" | "copied" | "skipped" | "failed" | "cancelled";
 
@@ -59,9 +59,14 @@ function runMagick(
   args: string[],
   signal: AbortSignal,
   cpuLimit = 70,
+  activeJobs = 2,
   onChildSpawn?: (pid: number) => void,
   onChildExit?: (pid: number) => void,
 ): Promise<{ code: number; signal: NodeJS.Signals | null; stderr: string }> {
+  const totalCpus = getTotalCpus();
+  const allowedCpus = Math.max(1, Math.floor(totalCpus * (cpuLimit / 100)));
+  const threadsPerJob = String(Math.max(1, Math.floor(allowedCpus / Math.max(1, activeJobs))));
+
   return new Promise((resolve) => {
     const child = spawn(exe, args, {
       windowsHide: true,
@@ -70,8 +75,8 @@ function runMagick(
       detached: process.platform === "linux",
       env: {
         ...process.env,
-        MAGICK_THREAD_LIMIT: "1",
-        OMP_NUM_THREADS: "1",
+        MAGICK_THREAD_LIMIT: threadsPerJob,
+        OMP_NUM_THREADS: threadsPerJob,
       },
     });
 
@@ -212,11 +217,13 @@ async function processOne(d: Decision, o: RunOptions): Promise<FileResult> {
       });
 
       const cpuLimit = o.getCpuLimit ? o.getCpuLimit() : (o.cpuLimit ?? 70);
+      const activeJobs = o.getLimit ? o.getLimit() : o.jobs;
       const { code, signal, stderr } = await runMagick(
         o.magickPath,
         args,
         o.signal,
         cpuLimit,
+        activeJobs,
         o.onChildSpawn,
         o.onChildExit,
       );

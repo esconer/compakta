@@ -370,6 +370,20 @@ await check("HEVC and GPU hardware encoder arguments", () => {
   assert.equal(nvencArgs[nvencArgs.indexOf("-c:v") + 1], "av1_nvenc");
   assert.equal(nvencArgs[nvencArgs.indexOf("-preset") + 1], "p4");
   assert.equal(nvencArgs[nvencArgs.indexOf("-cq") + 1], "28");
+  assert.equal(nvencArgs.includes("-hwaccel"), true);
+  assert.equal(nvencArgs[nvencArgs.indexOf("-hwaccel") + 1], "auto");
+
+  const qsvArgs = buildVideoEncoderArgs({
+    src: "in.mp4",
+    out: "out.mp4",
+    format: "av1_hw",
+    container: "mp4",
+    quality: 60,
+    speed: 9,
+    hwEncoderName: "av1_qsv",
+  });
+  assert.equal(qsvArgs[qsvArgs.indexOf("-preset") + 1], "veryfast");
+  assert.equal(qsvArgs.includes("-hwaccel"), true);
 });
 
 await check("rejects unsafe custom encoder parameters and untrusted FFmpeg URLs", () => {

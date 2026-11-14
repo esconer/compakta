@@ -344,6 +344,16 @@ export type VideoEncoderArgsOptions = {
 
 export function buildVideoEncoderArgs(o: VideoEncoderArgsOptions): string[] {
   const args: string[] = ["-hide_banner", "-nostdin", "-y"];
+  const isHw = o.format === "av1_hw" || o.format === "hevc_hw";
+  const hwEnc =
+    o.hwEncoderName || (o.format === "av1_hw" ? "av1_nvenc" : "hevc_nvenc");
+  const isVaapi = isHw && hwEnc.endsWith("_vaapi");
+
+  if (isVaapi) {
+    args.push("-vaapi_device", "/dev/dri/renderD128");
+  } else if (isHw) {
+    args.push("-hwaccel", "auto");
+  }
 
   if (o.sliceStartSec != null && o.sliceStartSec > 0) {
     args.push("-ss", o.sliceStartSec.toFixed(3));
@@ -380,6 +390,10 @@ export function buildVideoEncoderArgs(o: VideoEncoderArgsOptions): string[] {
   const maxFps = o.maxFps ?? 0;
   if (maxFps > 0 && (!o.sourceFps || o.sourceFps > maxFps + 0.5)) {
     vf.push(`fps=${maxFps}`);
+  }
+
+  if (isVaapi) {
+    vf.push(`format=${o.tenBit !== false ? "p010" : "nv12"},hwupload`);
   }
 
   if (vf.length > 0) {
@@ -430,8 +444,7 @@ export function buildVideoEncoderArgs(o: VideoEncoderArgsOptions): string[] {
 
     case "av1_hw":
     case "hevc_hw": {
-      const fallback = o.format === "av1_hw" ? "av1_nvenc" : "hevc_nvenc";
-      const enc = o.hwEncoderName || fallback;
+      const enc = hwEnc;
       const isHevc = o.format === "hevc_hw";
       args.push("-c:v", enc);
 
@@ -445,7 +458,9 @@ export function buildVideoEncoderArgs(o: VideoEncoderArgsOptions): string[] {
           "-pix_fmt", tenBit ? "p010le" : "yuv420p",
         );
       } else if (enc.endsWith("_qsv")) {
-        const qsvPreset = x265PresetName(o.speed);
+        // QSV only supports up to 'veryfast'; 'superfast' causes FFmpeg to error out
+        const rawPreset = x265PresetName(o.speed);
+        const qsvPreset = rawPreset === "superfast" ? "veryfast" : rawPreset;
         args.push(
           "-preset", qsvPreset,
           "-global_quality", String(crf),

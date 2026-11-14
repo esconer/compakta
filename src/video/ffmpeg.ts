@@ -63,7 +63,7 @@ function probeEncoders(ffmpegPath: string, version: string): {
   formats: Record<VideoOutputFormat, FormatSupport>;
   hwEncoders: FfmpegHwEncoders;
 } {
-  let cacheKey = `${ffmpegPath}:${version}`;
+  let cacheKey = `v2:${ffmpegPath}:${version}`;
   try {
     if (path.isAbsolute(ffmpegPath) && existsSync(ffmpegPath)) {
       cacheKey += `:${statSync(ffmpegPath).mtimeMs}`;
@@ -112,9 +112,9 @@ function probeEncoders(ffmpegPath: string, version: string): {
     formats.vp9 = { mode: "rw+", writable: true, detail: "libvpx-vp9" };
   }
 
-  // 2. Hardware GPU Encoders (Test NVENC -> QSV -> AMF -> VAAPI)
+  // 2. Hardware GPU Encoders (Test NVENC -> AMF -> QSV -> VAAPI)
   const av1Candidates = IS_WINDOWS
-    ? ["av1_nvenc", "av1_qsv", "av1_amf"]
+    ? ["av1_nvenc", "av1_amf", "av1_qsv"]
     : ["av1_nvenc", "av1_vaapi", "av1_qsv"];
 
   for (const candidate of av1Candidates) {
@@ -126,7 +126,7 @@ function probeEncoders(ffmpegPath: string, version: string): {
   }
 
   const hevcCandidates = IS_WINDOWS
-    ? ["hevc_nvenc", "hevc_qsv", "hevc_amf"]
+    ? ["hevc_nvenc", "hevc_amf", "hevc_qsv"]
     : ["hevc_nvenc", "hevc_vaapi", "hevc_qsv"];
 
   for (const candidate of hevcCandidates) {
@@ -152,18 +152,27 @@ function probeEncoders(ffmpegPath: string, version: string): {
  */
 function testHwEncoder(ffmpegPath: string, encoder: string): boolean {
   try {
+    const isVaapi = encoder.endsWith("_vaapi");
+    const args = [
+      "-hide_banner",
+      "-nostdin",
+      ...(isVaapi ? ["-vaapi_device", "/dev/dri/renderD128"] : []),
+      "-f", "lavfi",
+      // 256x256 satisfies NVENC, AMF, and QSV minimum hardware dimensions (128x128+)
+      "-i", "color=c=black:s=256x256:r=30:d=0.1",
+      "-frames:v", "1",
+      ...(isVaapi
+        ? ["-vf", "format=nv12,hwupload"]
+        : ["-pix_fmt", "yuv420p"]),
+      "-c:v", encoder,
+      "-f", "null",
+      "-",
+    ];
     execFileSync(
       ffmpegPath,
-      [
-        "-hide_banner",
-        "-nostdin",
-        "-f", "lavfi",
-        "-i", "color=c=black:s=64x64:d=0.04",
-        "-c:v", encoder,
-        "-f", "null",
-        "-",
-      ],
-      { stdio: "ignore", windowsHide: true, timeout: 3500 },
+      args,
+      // 8s timeout allows sleeping laptop dGPUs (Optimus/SmartShift) to wake from D3cold
+      { stdio: "ignore", windowsHide: true, timeout: 8000 },
     );
     return true;
   } catch {
