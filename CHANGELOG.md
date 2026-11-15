@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.3.3 - 2026-11-16
+
+- Performance, Pipeline Integrity & Architecture Hardening:
+  - Atomic File Operations: Staged file writes (`.part-pid-` temporary files) across ImageMagick conversions, FFmpeg video transcodes, frame extraction, cache artifacts, and manifest files to eliminate zero-byte and corrupted outputs on abort or crash.
+  - Multi-IFD / Camera RAW Safety: Ensured first-frame `[0]` indexing on TIFF and camera RAW formats (DNG, ARW, CR2, NEF) to prevent unexpected multi-page expansions.
+  - CPU & GPU Throttling: Dynamically controlled multi-threading for ImageMagick, robust CPU affinity masks (`taskset` on Linux, `SetProcessAffinityMask` on Windows), and enhanced hardware acceleration encoder detection (NVENC, QSV, AMF, VAAPI).
+  - Video Engine Hardening: Added smart audio transcoding for legacy container codecs (`wmav2`, `mp2`, `adpcm_*`), detached process group termination on Linux, robust execution timeouts, and SSE terminal event preservation across client reconnects.
+  - Client Architecture & UI Isolation: Added `rawPath` route isolation preventing cross-mode configuration leaks, library virtualization flat caching, in-place zoom scaling in Compare View, accessible focus management in Lightbox, and theme contrast fixes for Sepia mode.
+  - Test Harness & CI Stability: Replaced fragile process timeout commands with reliable ICMP timing for Windows CI and added SVG sprite reference validation.
+
 ## 1.3.2 - 2026-10-31
 
 - Fix comparison view preview for non-native original photo formats:
