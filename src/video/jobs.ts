@@ -4,7 +4,7 @@
  */
 import { EventEmitter } from "node:events";
 import type { FileResult } from "../convert.ts";
-import { applyProcessCpuLimit, resumeProcess, suspendProcess } from "../cpu.ts";
+import { applyProcessCpuLimit, resumeProcess, suspendProcess, acquireSleepInhibit, releaseSleepInhibit } from "../cpu.ts";
 import type { OutputFormat } from "../formats.ts";
 import type { JobState, Progress } from "../jobs.ts";
 import { writeManifest } from "../manifest.ts";
@@ -41,7 +41,8 @@ export class VideoJob extends EventEmitter {
   private done = 0;
   private total = 0;
   private inFlight = 0;
-  private totals = { converted: 0, copied: 0, skipped: 0, failed: 0, bytes: 0 };
+  private totals = { converted: 0, copied: 0, skipped: 0, failed: 0, bytes: 0, inBytes: 0 };
+  private sleepHeld = false;
 
   private pauseRequested = false;
   private osSuspended = false;
@@ -93,6 +94,7 @@ export class VideoJob extends EventEmitter {
       skipped: this.totals.skipped,
       failed: this.totals.failed,
       bytes: this.totals.bytes,
+      inBytes: this.totals.inBytes,
       jobs: this.liveJobs,
       cpuLimit: this.liveCpuLimit,
       inFlight: this.inFlight,
@@ -124,6 +126,7 @@ export class VideoJob extends EventEmitter {
       skipped: this.totals.skipped,
       failed: this.totals.failed,
       bytes: this.totals.bytes,
+      inBytes: this.totals.inBytes,
       elapsedSeconds: elapsed,
       etaSeconds: avg > 0 ? Math.round(remaining * avg) : undefined,
       file,
@@ -147,7 +150,7 @@ export class VideoJob extends EventEmitter {
     this.done = 0;
     this.elapsedBeforePauseMs = 0;
     this.osSuspended = false;
-    this.totals = { converted: 0, copied: 0, skipped: 0, failed: 0, bytes: 0 };
+    this.totals = { converted: 0, copied: 0, skipped: 0, failed: 0, bytes: 0, inBytes: 0 };
     this.total = opts.decisions.length;
     return this.execute(opts.decisions, false);
   }
@@ -159,6 +162,10 @@ export class VideoJob extends EventEmitter {
 
     // If in-flight FFmpeg processes were OS-suspended, wake them up immediately
     if (this.osSuspended && this.activePids.size > 0) {
+      if (!this.sleepHeld) {
+        acquireSleepInhibit();
+        this.sleepHeld = true;
+      }
       for (const pid of this.activePids) {
         resumeProcess(pid);
       }
@@ -191,6 +198,11 @@ export class VideoJob extends EventEmitter {
     if (this.state !== "running") return false;
     this.pauseRequested = true;
 
+    if (this.sleepHeld) {
+      releaseSleepInhibit();
+      this.sleepHeld = false;
+    }
+
     let anySuspended = false;
     for (const pid of this.activePids) {
       if (suspendProcess(pid)) {
@@ -217,6 +229,11 @@ export class VideoJob extends EventEmitter {
   }
 
   cancel() {
+    if (this.sleepHeld) {
+      releaseSleepInhibit();
+      this.sleepHeld = false;
+    }
+
     // Wake any suspended processes before aborting so they can exit and clean up .part files
     if (this.osSuspended) {
       for (const pid of this.activePids) {
@@ -254,6 +271,7 @@ export class VideoJob extends EventEmitter {
       skipped: this.totals.skipped,
       failed: this.totals.failed,
       bytes,
+      inBytes: this.totals.inBytes,
       remaining: this.total - this.done,
       elapsedSeconds: Math.round(this.totalElapsedSeconds()),
       note,
@@ -265,6 +283,11 @@ export class VideoJob extends EventEmitter {
     this.started = Date.now();
     this.controller = new AbortController();
     const o = this.opts!;
+
+    if (!this.sleepHeld) {
+      acquireSleepInhibit();
+      this.sleepHeld = true;
+    }
 
     this.emit("progress", {
       type: resuming ? "resumed" : "start",
@@ -304,6 +327,7 @@ export class VideoJob extends EventEmitter {
             this.inFlight--;
             this.finished.add(r.rel);
             this.totals.bytes += r.outBytes;
+            this.totals.inBytes += r.inBytes;
             if (r.status !== "cancelled") {
               this.done++;
               this.totals[
@@ -388,6 +412,11 @@ export class VideoJob extends EventEmitter {
       };
       this.lastTerminalEvent = errEvt;
       this.emit("progress", errEvt);
+    } finally {
+      if (this.sleepHeld && this.state !== "running") {
+        releaseSleepInhibit();
+        this.sleepHeld = false;
+      }
     }
   }
 }

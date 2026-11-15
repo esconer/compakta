@@ -340,6 +340,7 @@ export type VideoEncoderArgsOptions = {
   sliceStartSec?: number;
   sliceDurationSec?: number;
   progressPipe?: boolean;
+  skipHwDecode?: boolean;
 };
 
 const MP4_COPYABLE_AUDIO = new Set([
@@ -355,7 +356,7 @@ export function buildVideoEncoderArgs(o: VideoEncoderArgsOptions): string[] {
 
   if (isVaapi) {
     args.push("-vaapi_device", "/dev/dri/renderD128");
-  } else if (isHw) {
+  } else if (isHw && !o.skipHwDecode) {
     args.push("-hwaccel", "auto");
   }
 

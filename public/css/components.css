@@ -636,6 +636,7 @@ input[type="range"]:disabled { opacity: .4; cursor: not-allowed; }
   background: var(--action-primary-soft);
   color: var(--action-primary);
 }
+.ext-chip.zero { opacity: 0.5; }
 
 /* ───────────────────────────────── tree ───────────────────────────────── */
 .library-scroll { padding: 12px 0 8px; }

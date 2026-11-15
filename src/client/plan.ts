@@ -18,6 +18,7 @@ export type PlanOptions = {
   onAudit: () => void;
   onHealth: () => void;
   onReviewBudget: () => void;
+  onExcludeFolder?: (rel: string) => void;
 };
 
 export type PlanController = {
@@ -28,7 +29,7 @@ type Warning = {
   severity: "info" | "warning" | "blocker" | "success";
   title: string;
   body: string;
-  action?: { label: string; kind: "health" | "budget" };
+  action?: { label: string; kind: "health" | "budget" | "drop-suggested"; targetFolder?: string };
 };
 
 const warningIcon = (severity: Warning["severity"]): string => {
@@ -105,7 +106,9 @@ const warningsFor = (p: PreviewResponse): Warning[] => {
       body: first
         ? `Dropping ${first.rel} would bring the plan to ${fmt(first.runningTotalAfterDrop)}${first.getsUnderBudget ? " — under budget." : ", still over budget."}`
         : "The projected output is larger than the storage budget.",
-      action: { label: "Review by folder", kind: "budget" },
+      action: first
+        ? { label: `Drop ${first.rel}`, kind: "drop-suggested", targetFolder: first.rel }
+        : { label: "Review by folder", kind: "budget" },
     });
   }
 
@@ -255,7 +258,7 @@ export function createPlan(opts: PlanOptions): PlanController {
       .map((warning) => `<div class="warning-card" data-severity="${warning.severity}">
         <span class="warning-icon">${icon(warningIcon(warning.severity), 15)}</span>
         <span class="warning-text"><b>${escapeHtml(warning.title)}</b>${warning.body ? `<br>${escapeHtml(warning.body)}` : ""}</span>
-        ${warning.action ? `<button class="warning-action" type="button" data-plan-action="${warning.action.kind}">${escapeHtml(warning.action.label)}</button>` : ""}
+        ${warning.action ? `<button class="warning-action" type="button" data-plan-action="${warning.action.kind}"${warning.action.targetFolder ? ` data-target-folder="${escapeHtml(warning.action.targetFolder)}"` : ""}>${escapeHtml(warning.action.label)}</button>` : ""}
       </div>`)
       .join("");
 
@@ -315,6 +318,10 @@ export function createPlan(opts: PlanOptions): PlanController {
     if (!target) return;
     if (target.dataset.planAction === "health") opts.onHealth();
     if (target.dataset.planAction === "budget") opts.onReviewBudget();
+    if (target.dataset.planAction === "drop-suggested") {
+      const folder = target.dataset.targetFolder;
+      if (folder) opts.onExcludeFolder?.(folder);
+    }
   });
 
   return { render };

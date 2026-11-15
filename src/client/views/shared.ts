@@ -51,6 +51,7 @@ export type ViewActions = {
   checkMagick: (force?: boolean) => Promise<UpdateStatus>;
   refreshStatusMagick: () => Promise<void>;
   installMagick: () => Promise<void>;
+  openDestination?: (target?: string) => Promise<void>;
 };
 
 export const emptyState = (iconName: string, title: string, note: string): string =>

@@ -54,11 +54,16 @@ export function createRunLifecycle(options: RunLifecycleOptions): RunLifecycle {
     if (!file) return;
     state.activity.push(file);
     if (state.activity.length > 500) state.activity.splice(0, state.activity.length - 500);
+    if (file.status === "failed") {
+      state.failedActivity.push(file);
+      if (state.failedActivity.length > 500) state.failedActivity.splice(0, state.failedActivity.length - 500);
+    }
     state.run.lastRel = file.rel;
     state.run.lastStatus = file.status;
   };
 
   const finish = (p: ProgressEvent): void => {
+    document.title = "Compakta";
     state.es?.close();
     state.es = null;
     state.currentJob = null;
@@ -77,6 +82,9 @@ export function createRunLifecycle(options: RunLifecycleOptions): RunLifecycle {
       state.run.skipped = summary.skipped;
       state.run.failed = summary.failed;
       state.run.bytes = summary.bytes;
+      if (summary.inBytes != null) {
+        state.run.inBytes = summary.inBytes;
+      }
       state.run.elapsedSeconds = summary.elapsedSeconds;
       state.run.etaSeconds = null;
     }
@@ -98,6 +106,16 @@ export function createRunLifecycle(options: RunLifecycleOptions): RunLifecycle {
     } else if (summary) {
       const failed = summary.failed ? `, ${summary.failed.toLocaleString()} failed` : "";
       options.onInfo(`Done. ${summary.converted.toLocaleString()} converted, ${summary.copied.toLocaleString()} copied${failed} → ${fmt(summary.bytes)}.`);
+    }
+
+    if (typeof Notification !== "undefined" && Notification.permission === "granted" && document.hidden) {
+      try {
+        const title = summary?.note === "cancelled" ? "Compakta run cancelled" : "Compakta run complete";
+        const body = summary
+          ? `${summary.converted.toLocaleString()} converted, ${summary.copied.toLocaleString()} copied${summary.failed ? `, ${summary.failed} failed` : ""}`
+          : "Conversion finished";
+        new Notification(title, { body });
+      } catch {}
     }
     void options.onFinished();
   };
@@ -126,9 +144,12 @@ export function createRunLifecycle(options: RunLifecycleOptions): RunLifecycle {
       state.run.skipped = event.skipped ?? state.run.skipped;
       state.run.failed = event.failed ?? state.run.failed;
       state.run.bytes = event.bytes ?? state.run.bytes;
+      state.run.inBytes = event.inBytes ?? state.run.inBytes;
       state.run.etaSeconds = event.etaSeconds ?? null;
       state.run.elapsedSeconds = event.elapsedSeconds ?? state.run.elapsedSeconds;
       state.run.inFlight = event.inFlight ?? state.run.inFlight;
+      const pct = state.run.total > 0 ? Math.round((state.run.done / state.run.total) * 100) : 0;
+      document.title = `(${pct}%) Compakta`;
       if (event.starting) {
         state.run.startingRel = event.starting.rel;
         state.run.startingBytes = event.starting.bytes;
@@ -285,6 +306,9 @@ export function createRunLifecycle(options: RunLifecycleOptions): RunLifecycle {
 
   const start = async (runOptions: { onlyNew?: boolean } = {}): Promise<void> => {
     if (isActive()) return;
+    if (typeof Notification !== "undefined" && Notification.permission === "default") {
+      Notification.requestPermission().catch(() => {});
+    }
     state.starting = true;
     render();
     try {
@@ -363,6 +387,7 @@ export function createRunLifecycle(options: RunLifecycleOptions): RunLifecycle {
   };
 
   const cancel = async (): Promise<void> => {
+    document.title = "Compakta";
     await post(`cancel/${encodeURIComponent(state.currentJob ?? "")}`, "Cancelling…");
   };
 

@@ -37,6 +37,7 @@ export type RunState = {
   skipped: number;
   failed: number;
   bytes: number;
+  inBytes?: number;
   etaSeconds: number | null;
   elapsedSeconds: number | null;
   inFlight: number;
@@ -75,6 +76,7 @@ export type AppState = {
   lastManifestId: string | null;
   lastJobError: string | null;
   activity: FileResult[];
+  failedActivity: FileResult[];
   running: boolean;
   starting: boolean;
   es: EventSource | null;
@@ -111,6 +113,7 @@ const emptyRun = (): RunState => ({
   skipped: 0,
   failed: 0,
   bytes: 0,
+  inBytes: 0,
   etaSeconds: null,
   elapsedSeconds: null,
   inFlight: 0,
@@ -148,6 +151,7 @@ export const state: AppState = {
   lastManifestId: null,
   lastJobError: null,
   activity: [],
+  failedActivity: [],
   running: false,
   starting: false,
   es: null,
@@ -177,6 +181,7 @@ export const state: AppState = {
 export const resetRun = (total: number): void => {
   state.run = { ...emptyRun(), total, state: "running" };
   state.activity = [];
+  state.failedActivity = [];
   state.lastSummary = null;
   state.lastManifestId = null;
   state.lastJobError = null;

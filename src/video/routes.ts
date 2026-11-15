@@ -60,6 +60,7 @@ import {
 import { analyseVideoSync, pendingVideoOnly } from "./sync.ts";
 import { cleanOrphans } from "../sync.ts";
 import { loadPersistedSettings, savePersistedSettings } from "../settings.ts";
+import { openPathInOs } from "../server.ts";
 
 export type SharedServerBridge = {
   getSourceRoot: () => string;
@@ -969,6 +970,18 @@ export async function handleVideoApi(
     if (!manifest) throw Object.assign(new Error("No such manifest."), { status: 404 });
     const result = await undoManifest(manifest, { dryRun: body.dryRun });
     return json(result);
+  }
+
+  // ---- open video destination folder in OS explorer ----
+  if (subroute === "open-destination" && req.method === "POST") {
+    const body = await readBody<{ destination?: string }>(req);
+    const target = body.destination || effectiveDest(bridge);
+    if (!target) throw Object.assign(new Error("Destination is not set."), { status: 400 });
+    if (!existsSync(target)) {
+      throw Object.assign(new Error(`Destination directory does not exist on disk: ${target}`), { status: 404 });
+    }
+    const ok = openPathInOs(target);
+    return json({ ok, target });
   }
 
   throw Object.assign(new Error(`Unknown video route: /api/video/${subroute}`), { status: 404 });

@@ -7,7 +7,7 @@ import type { FileResult } from "./convert.ts";
 import { runConversion } from "./convert.ts";
 import type { Decision, Policy } from "./policy.ts";
 import { writeManifest, listManifests, readManifest, undoManifest, type Manifest } from "./manifest.ts";
-import { applyProcessCpuLimit } from "./cpu.ts";
+import { applyProcessCpuLimit, acquireSleepInhibit, releaseSleepInhibit } from "./cpu.ts";
 
 export type JobState = "idle" | "running" | "paused" | "done" | "cancelled" | "failed";
 
@@ -22,6 +22,7 @@ export type Progress = {
   skipped?: number;
   failed?: number;
   bytes?: number;
+  inBytes?: number;
   etaSeconds?: number;
   elapsedSeconds?: number;
   file?: FileResult;
@@ -61,7 +62,8 @@ export class Job extends EventEmitter {
   private started = 0;
   private done = 0;
   private inFlight = 0;
-  private totals = { converted: 0, copied: 0, skipped: 0, failed: 0, bytes: 0 };
+  private totals = { converted: 0, copied: 0, skipped: 0, failed: 0, bytes: 0, inBytes: 0 };
+  private sleepHeld = false;
 
   // ── pause / resume ──
   private pauseRequested = false;
@@ -140,6 +142,7 @@ export class Job extends EventEmitter {
       skipped: this.totals.skipped,
       failed: this.totals.failed,
       bytes: this.totals.bytes,
+      inBytes: this.totals.inBytes,
       elapsedSeconds: elapsed,
       etaSeconds: Math.round(remaining * avg),
       file,
@@ -162,7 +165,7 @@ private total = 0;
     this.activePids.clear();
     this.finished = new Set();
     this.done = 0;
-    this.totals = { converted: 0, copied: 0, skipped: 0, failed: 0, bytes: 0 };
+    this.totals = { converted: 0, copied: 0, skipped: 0, failed: 0, bytes: 0, inBytes: 0 };
     this.total = opts.decisions.length;
     return this.execute(opts.decisions, false);
   }
@@ -197,6 +200,7 @@ private total = 0;
       skipped: this.totals.skipped,
       failed: this.totals.failed,
       bytes: this.totals.bytes,
+      inBytes: this.totals.inBytes,
       jobs: this.liveJobs,
       cpuLimit: this.liveCpuLimit,
       inFlight: this.inFlight,
@@ -212,6 +216,10 @@ private total = 0;
 
   /** Hard stop: kills in-flight encoders. Partial outputs are cleaned up. */
   cancel() {
+    if (this.sleepHeld) {
+      releaseSleepInhibit();
+      this.sleepHeld = false;
+    }
     // A paused job has nothing in flight, so cancelling is just a state change.
     // It still has to be handled: otherwise a paused run could never be
     // abandoned and the UI's "Cancel instead" would silently do nothing.
@@ -243,6 +251,7 @@ private total = 0;
       skipped: this.totals.skipped,
       failed: this.totals.failed,
       bytes,
+      inBytes: this.totals.inBytes,
       remaining: this.total - this.done,
       elapsedSeconds: Math.round((this.elapsedBeforePauseMs + (Date.now() - this.started)) / 1000),
       note,
@@ -257,6 +266,11 @@ private total = 0;
     this.started = Date.now();
     this.controller = new AbortController();
     const o = this.opts!;
+
+    if (!this.sleepHeld) {
+      acquireSleepInhibit();
+      this.sleepHeld = true;
+    }
 
     this.emit("progress", {
       type: resuming ? "resumed" : "start",
@@ -291,6 +305,7 @@ private total = 0;
           this.inFlight--;
           this.finished.add(r.rel);
           this.totals.bytes += r.outBytes;
+          this.totals.inBytes += r.inBytes;
           if (r.status !== "cancelled") {
             this.done++;
             this.totals[r.status === "converted" ? "converted"
@@ -361,6 +376,11 @@ private total = 0;
       };
       this.lastTerminalEvent = errEvt;
       this.emit("progress", errEvt);
+    } finally {
+      if (this.sleepHeld && this.state !== "running") {
+        releaseSleepInhibit();
+        this.sleepHeld = false;
+      }
     }
   }
 }

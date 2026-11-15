@@ -14,12 +14,16 @@ export type LightboxController = {
   isOpen: () => boolean;
 };
 
-export function createLightbox(getFiles: () => ScannedFile[]): LightboxController {
+export function createLightbox(
+  getFiles: () => ScannedFile[],
+  onCompare?: (rel: string) => void,
+): LightboxController {
   const overlay = $("lightbox");
   const titleEl = $("lightboxTitle");
   const counterEl = $("lightboxCounter");
   const infoEl = $("lightboxInfo");
   const closeBtn = $("lightboxClose");
+  const compareBtn = document.getElementById("lightboxCompare") as HTMLButtonElement | null;
   const prevBtn = $("lightboxPrev") as HTMLButtonElement;
   const nextBtn = $("lightboxNext") as HTMLButtonElement;
   const imgEl = $("lightboxImg") as HTMLImageElement;
@@ -41,6 +45,9 @@ export function createLightbox(getFiles: () => ScannedFile[]): LightboxControlle
 
     prevBtn.disabled = currentFiles.length <= 1;
     nextBtn.disabled = currentFiles.length <= 1;
+    if (compareBtn) {
+      compareBtn.style.display = file.category !== "other" ? "" : "none";
+    }
 
     spinnerEl.classList.remove("hidden");
     imgEl.classList.add("loading");
@@ -100,6 +107,16 @@ export function createLightbox(getFiles: () => ScannedFile[]): LightboxControlle
   };
 
   closeBtn.addEventListener("click", close);
+  if (compareBtn && onCompare) {
+    compareBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const targetRel = activeRel;
+      if (targetRel) {
+        close();
+        onCompare(targetRel);
+      }
+    });
+  }
   nextBtn.addEventListener("click", (e) => {
     e.stopPropagation();
     next();

@@ -371,14 +371,61 @@ async function processOneVideo(
       return { ...base, status: "cancelled", seconds: (Date.now() - started) / 1000 };
     }
 
-    if (code !== 0) {
+    let finalCode = code;
+    let finalSignal = signal;
+    let finalStderr = stderr;
+
+    const isHw = o.policy.outputFormat === "av1_hw" || o.policy.outputFormat === "hevc_hw";
+    if (finalCode !== 0 && isHw && !o.signal.aborted) {
+      // GPU decode error fallback: retry once using CPU decode to bypass hardware decoder faults
       await rm(partOut, { force: true }).catch(() => {});
-      const detail = stderr.trim().split(/\r?\n/).slice(-3).join(" ").slice(0, 220);
+      const fallbackArgs = buildVideoEncoderArgs({
+        src,
+        out: partOut,
+        format: o.policy.outputFormat,
+        container: o.policy.container,
+        quality: o.policy.quality,
+        speed: o.policy.speed,
+        maxResolution: o.policy.maxResolution,
+        maxFps: o.policy.maxFps,
+        audioMode: o.policy.audioMode,
+        sourceAudioCodec: facts.audioCodec,
+        sourceFps: facts.fps,
+        isHdr: facts.isHdr,
+        colorTransfer: facts.colorTransfer,
+        tenBit: o.policy.tenBit,
+        filmGrain: o.policy.filmGrain,
+        customParams: o.policy.customParams,
+        hwEncoderName,
+        progressPipe: true,
+        skipHwDecode: true,
+      });
+
+      const fallbackRun = await runFfmpegWithProgress(
+        o.ffmpeg.ffmpegPath,
+        fallbackArgs,
+        facts.durationSec,
+        d.file.rel,
+        o.signal,
+        cpuLimit,
+        o.onFileProgress,
+        o.onChildSpawn,
+        o.onChildExit,
+      );
+
+      finalCode = fallbackRun.code;
+      finalSignal = fallbackRun.signal;
+      finalStderr = fallbackRun.stderr;
+    }
+
+    if (finalCode !== 0) {
+      await rm(partOut, { force: true }).catch(() => {});
+      const detail = finalStderr.trim().split(/\r?\n/).slice(-3).join(" ").slice(0, 220);
       const errText =
         detail ||
-        (signal
-          ? `ffmpeg was killed by ${signal}`
-          : `ffmpeg exited with code ${code}`);
+        (finalSignal
+          ? `ffmpeg was killed by ${finalSignal}`
+          : `ffmpeg exited with code ${finalCode}`);
       return {
         ...base,
         status: "failed",

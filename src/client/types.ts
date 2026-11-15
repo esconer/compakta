@@ -157,6 +157,7 @@ export type ScanResult = {
   riskyNames: { rel: string; reason: string }[];
   skipped: { path: string; reason: string }[];
   projects: string[];
+  recentSources?: string[];
 };
 
 export type Status = {
@@ -168,6 +169,7 @@ export type Status = {
   arch: string;
   canPickFolder: boolean;
   budgetBytes: number;
+  recentSources?: string[];
   ratio: number;
   ratios: Record<OutputFormat, number>;
   outputFormat: OutputFormat;
@@ -353,6 +355,7 @@ export type ProgressEvent = {
   skipped?: number;
   failed?: number;
   bytes?: number;
+  inBytes?: number;
   etaSeconds?: number;
   elapsedSeconds?: number;
   file?: FileResult;
@@ -375,6 +378,7 @@ export type JobSummary = {
   skipped: number;
   failed: number;
   bytes: number;
+  inBytes?: number;
   remaining: number;
   elapsedSeconds: number;
   note?: string;
@@ -399,6 +403,7 @@ export type JobSnapshot = {
   skipped: number;
   failed: number;
   bytes: number;
+  inBytes?: number;
   jobs: number;
   cpuLimit?: number;
   inFlight: number;
@@ -453,6 +458,7 @@ export type ManifestSummary = {
   skipped: number;
   failed: number;
   bytes: number;
+  inBytes?: number;
 };
 
 export type ManifestItem = {

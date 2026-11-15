@@ -49,6 +49,22 @@ export function createCompareView(actions: ViewActions): CompareViewController {
   let activeFormat: OutputFormat = state.currentFormat;
   let isDraggingSplitter = false;
   let stagePointerBound = false;
+  let panX = 0;
+  let panY = 0;
+  let isPanning = false;
+
+  const applyImageTransforms = (): void => {
+    const stage = $("compareStage");
+    const imgs = stage.querySelectorAll<HTMLImageElement>(".compare-pane img");
+    if (!imgs.length) return;
+    const transform = state.compareZoom > 0
+      ? `translate(${panX}px, ${panY}px) scale(${state.compareZoom})`
+      : "";
+    imgs.forEach((img) => {
+      img.style.transform = transform;
+      img.style.transformOrigin = "center center";
+    });
+  };
 
   const fileList = () => actions.selectedFiles();
 
@@ -329,6 +345,8 @@ export function createCompareView(actions: ViewActions): CompareViewController {
     // Hook up bottom dock events
     setupDockEvents();
 
+    applyImageTransforms();
+
     const img = stage.querySelector<HTMLImageElement>(".compare-pane.original img");
     if (img) {
       if (img.complete && img.naturalWidth) {
@@ -420,10 +438,54 @@ export function createCompareView(actions: ViewActions): CompareViewController {
     // canvas listener once so re-renders cannot stack duplicate handlers.
     if (!stagePointerBound) {
       stagePointerBound = true;
+
+      stage.addEventListener(
+        "wheel",
+        (e: WheelEvent) => {
+          e.preventDefault();
+          if (e.deltaY < 0) {
+            setZoom(state.compareZoom === 0 ? 1 : Math.min(3, Number((state.compareZoom + 0.15).toFixed(2))));
+          } else if (e.deltaY > 0) {
+            setZoom(state.compareZoom <= 0.2 ? 0 : Math.max(0, Number((state.compareZoom - 0.15).toFixed(2))));
+          }
+        },
+        { passive: false },
+      );
+
       stage.addEventListener("pointerdown", (e: PointerEvent) => {
         if ((e.target as HTMLElement).closest(".canvas-dock, .frosted-badge, .compare-split-handle")) {
           return;
         }
+
+        if (state.compareZoom > 0) {
+          isPanning = true;
+          const startX = e.clientX;
+          const startY = e.clientY;
+          const origPanX = panX;
+          const origPanY = panY;
+          stage.style.cursor = "grabbing";
+
+          const onPanMove = (me: PointerEvent) => {
+            if (!isPanning) return;
+            panX = origPanX + (me.clientX - startX);
+            panY = origPanY + (me.clientY - startY);
+            applyImageTransforms();
+          };
+
+          const onPanUp = () => {
+            isPanning = false;
+            stage.style.cursor = "";
+            window.removeEventListener("pointermove", onPanMove);
+            window.removeEventListener("pointerup", onPanUp);
+            window.removeEventListener("pointercancel", onPanUp);
+          };
+
+          window.addEventListener("pointermove", onPanMove);
+          window.addEventListener("pointerup", onPanUp);
+          window.addEventListener("pointercancel", onPanUp);
+          return;
+        }
+
         if (state.compareMode === "toggle") {
           state.compareShowOriginal = !state.compareShowOriginal;
           renderStage();
@@ -506,6 +568,8 @@ export function createCompareView(actions: ViewActions): CompareViewController {
     if (format) activeFormat = format;
     dimensions = null;
     state.compareVariant = 0;
+    panX = 0;
+    panY = 0;
     $("compareEmpty").innerHTML = `
       <div class="empty-state">
         <svg width="24" height="24" aria-hidden="true"><use href="#i-loader"></use></svg>
@@ -547,6 +611,8 @@ export function createCompareView(actions: ViewActions): CompareViewController {
   const open = (rel?: string): void => {
     actions.switchView("compare");
     activeFormat = state.currentFormat;
+    panX = 0;
+    panY = 0;
     const files = fileList();
     const wanted = rel ?? state.compareRel;
     const chosen =
@@ -591,6 +657,10 @@ export function createCompareView(actions: ViewActions): CompareViewController {
 
   const setZoom = (next: number): void => {
     state.compareZoom = Math.max(0, Math.min(3, next));
+    if (state.compareZoom === 0) {
+      panX = 0;
+      panY = 0;
+    }
     const slider = document.getElementById("compareZoomSlider") as HTMLInputElement | null;
     if (slider) {
       const displayVal = Math.round(state.compareZoom * 100);
@@ -603,8 +673,7 @@ export function createCompareView(actions: ViewActions): CompareViewController {
     const stage = $("compareStage");
     const imgs = stage.querySelectorAll<HTMLImageElement>(".compare-pane img");
     if (imgs.length) {
-      const transform = state.compareZoom > 0 ? `scale(${state.compareZoom})` : "";
-      imgs.forEach((img) => { img.style.transform = transform; });
+      applyImageTransforms();
       document.getElementById("btnDockFit")?.classList.toggle("active", state.compareZoom === 0);
       document.getElementById("btnDock100")?.classList.toggle("active", state.compareZoom === 1);
     } else {
@@ -735,6 +804,17 @@ export function createCompareView(actions: ViewActions): CompareViewController {
       const step = event.key === "]" ? 1 : -1;
       state.compareVariant = (state.compareVariant + step + count) % count;
       renderStage();
+      return true;
+    }
+    if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+      event.preventDefault();
+      const files = fileList();
+      if (files.length <= 1) return true;
+      const idx = files.findIndex((f) => f.rel === state.compareRel);
+      const step = event.key === "ArrowRight" ? 1 : -1;
+      const nextIdx = (idx + step + files.length) % files.length;
+      const nextRel = files[nextIdx].rel;
+      void run(nextRel, activeFormat);
       return true;
     }
     return false;

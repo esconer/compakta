@@ -5,7 +5,7 @@
  * percentage (default 70%, adjustable 10% - 100%) mid-run.
  */
 import os from "node:os";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { dlopen, FFIType } from "bun:ffi";
 
 export function getTotalCpus(): number {
@@ -32,12 +32,13 @@ export function calculateAffinityMask(percent: number, rawTotalCpus = getTotalCp
   return (1n << BigInt(allowed)) - 1n;
 }
 
-// Windows kernel32 dynamic bindings for process affinity
+// Windows kernel32 dynamic bindings for process affinity and sleep inhibition
 type Kernel32 = {
   symbols: {
     OpenProcess: (dwDesiredAccess: number, bInheritHandle: boolean, dwProcessId: number) => number | bigint | null;
     SetProcessAffinityMask: (hProcess: any, dwProcessAffinityMask: bigint) => boolean;
     CloseHandle: (hObject: any) => boolean;
+    SetThreadExecutionState?: (esFlags: number) => number;
   };
 };
 
@@ -65,6 +66,10 @@ if (process.platform === "win32") {
       CloseHandle: {
         args: [FFIType.ptr],
         returns: FFIType.bool,
+      },
+      SetThreadExecutionState: {
+        args: [FFIType.u32],
+        returns: FFIType.u32,
       },
     }) as unknown as Kernel32;
 
@@ -203,3 +208,100 @@ export function applyProcessCpuLimit(pid: number | undefined, percent: number): 
 
   return success;
 }
+
+// ---------------------------------------------------------------------------
+// Sleep inhibition during active batch runs
+// ---------------------------------------------------------------------------
+
+const ES_CONTINUOUS = 0x80000000;
+const ES_SYSTEM_REQUIRED = 0x00000001;
+const ES_AWAYMODE_REQUIRED = 0x00000040;
+
+let sleepInhibitRefCount = 0;
+let linuxInhibitChild: ChildProcess | null = null;
+
+/**
+ * Prevents OS idle sleep while media conversions are actively running.
+ * Reference-counted so overlapping photo/video runs do not prematurely drop the lock.
+ */
+export function acquireSleepInhibit(): void {
+  sleepInhibitRefCount++;
+  if (sleepInhibitRefCount > 1) return;
+
+  if (process.platform === "win32" && k32?.symbols.SetThreadExecutionState) {
+    try {
+      k32.symbols.SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_AWAYMODE_REQUIRED);
+    } catch {
+      // ignore
+    }
+  } else if (process.platform === "linux") {
+    try {
+      const child = spawn(
+        "systemd-inhibit",
+        [
+          "--what=idle:sleep",
+          "--who=picmagik",
+          "--why=Batch media processing active",
+          "--mode=block",
+          "sleep",
+          "infinity",
+        ],
+        { stdio: "ignore" },
+      );
+      child.on("error", () => {
+        if (linuxInhibitChild === child) linuxInhibitChild = null;
+      });
+      child.on("exit", () => {
+        if (linuxInhibitChild === child) linuxInhibitChild = null;
+      });
+      child.unref();
+      linuxInhibitChild = child;
+    } catch {
+      // systemd-inhibit not available
+    }
+  }
+}
+
+/**
+ * Releases sleep inhibition lock. Re-enables system idle sleep once refcount reaches 0.
+ */
+export function releaseSleepInhibit(): void {
+  if (sleepInhibitRefCount <= 0) return;
+  sleepInhibitRefCount--;
+  if (sleepInhibitRefCount > 0) return;
+
+  if (process.platform === "win32" && k32?.symbols.SetThreadExecutionState) {
+    try {
+      k32.symbols.SetThreadExecutionState(ES_CONTINUOUS);
+    } catch {
+      // ignore
+    }
+  } else if (process.platform === "linux") {
+    if (linuxInhibitChild) {
+      try {
+        linuxInhibitChild.kill();
+      } catch {
+        // ignore
+      }
+      linuxInhibitChild = null;
+    }
+  }
+}
+
+process.on("exit", () => {
+  if (linuxInhibitChild) {
+    try {
+      linuxInhibitChild.kill();
+    } catch {
+      // ignore
+    }
+    linuxInhibitChild = null;
+  }
+  if (process.platform === "win32" && k32?.symbols.SetThreadExecutionState && sleepInhibitRefCount > 0) {
+    try {
+      k32.symbols.SetThreadExecutionState(ES_CONTINUOUS);
+    } catch {
+      // ignore
+    }
+  }
+});

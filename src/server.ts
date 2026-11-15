@@ -42,7 +42,7 @@ import {
 } from "./app-update.ts";
 import { CASE_INSENSITIVE, IS_LINUX, IS_WINDOWS, pathKey, REL_SEP } from "./platform.ts";
 import { PREVIEW_CACHE_DIR, PUBLIC_DIR } from "./appdirs.ts";
-import { loadPersistedSettings, savePersistedSettings } from "./settings.ts";
+import { loadPersistedSettings, savePersistedSettings, recordRecentSource } from "./settings.ts";
 import {
   currentVideoPreview,
   handleVideoApi,
@@ -146,6 +146,23 @@ function requireMagick(): MagickInfo {
 }
 
 const currentRatio = () => state.ratios[state.policy.outputFormat];
+
+export function openPathInOs(targetPath: string): boolean {
+  try {
+    if (process.platform === "win32") {
+      spawn("explorer.exe", [targetPath], { detached: true, stdio: "ignore" }).unref();
+      return true;
+    } else if (process.platform === "darwin") {
+      spawn("open", [targetPath], { detached: true, stdio: "ignore" }).unref();
+      return true;
+    } else {
+      spawn("xdg-open", [targetPath], { detached: true, stdio: "ignore" }).unref();
+      return true;
+    }
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Merge a policy update without losing the per-format slider values.
@@ -471,6 +488,7 @@ async function handleApi(pathname: string, req: Request, url: URL): Promise<Resp
       pausedJobId: pausedJob()?.id ?? null,
       redundantRoots: state.redundantRoots,
       projects: projectList(),
+      recentSources: loadPersistedSettings().recentSources ?? [],
     });
   }
 
@@ -493,6 +511,7 @@ async function handleApi(pathname: string, req: Request, url: URL): Promise<Resp
     // A new source invalidates everything derived from the old one.
     if (nextSource !== state.sourceRoot) {
       state.sourceRoot = nextSource;
+      recordRecentSource(state.sourceRoot);
       state.scan = null;
       state.index = new Map();
       state.dedupe = null;
@@ -567,6 +586,7 @@ async function handleApi(pathname: string, req: Request, url: URL): Promise<Resp
     // Measured ratios describe the current source. Keep them on a re-scan of
     // the same folder; reset only when the source actually changed.
     if (state.sourceRoot !== previousSource) state.ratios = defaultRatios();
+    recordRecentSource(state.sourceRoot);
     savePersistedSettings({
       sourceRoot: state.sourceRoot,
       destination: state.destination,
@@ -580,6 +600,7 @@ async function handleApi(pathname: string, req: Request, url: URL): Promise<Resp
       riskyNames: state.scan.riskyNames,
       skipped: state.scan.skipped,
       projects: projectList(),
+      recentSources: loadPersistedSettings().recentSources ?? [],
     });
   }
 
@@ -1456,6 +1477,18 @@ async function handleApi(pathname: string, req: Request, url: URL): Promise<Resp
     if (!manifest) throw new HttpError(404, "No such manifest.");
     const result = await undoManifest(manifest, { dryRun: body.dryRun });
     return json(result);
+  }
+
+  // ---- open destination folder in OS explorer ----
+  if (route === "open-destination" && req.method === "POST") {
+    const body = await readBody<{ destination?: string }>(req);
+    const target = body.destination || state.destination;
+    if (!target) throw new HttpError(400, "Destination is not set.");
+    if (!existsSync(target)) {
+      throw new HttpError(404, `Destination directory does not exist on disk: ${target}`);
+    }
+    const ok = openPathInOs(target);
+    return json({ ok, target });
   }
 
   throw new HttpError(404, `Unknown route: /api/${route}`);

@@ -9,6 +9,7 @@ var emptyRun = () => ({
   skipped: 0,
   failed: 0,
   bytes: 0,
+  inBytes: 0,
   etaSeconds: null,
   elapsedSeconds: null,
   inFlight: 0,
@@ -41,6 +42,7 @@ var state = {
   lastManifestId: null,
   lastJobError: null,
   activity: [],
+  failedActivity: [],
   running: false,
   starting: false,
   es: null,
@@ -65,6 +67,7 @@ var state = {
 var resetRun = (total) => {
   state.run = { ...emptyRun(), total, state: "running" };
   state.activity = [];
+  state.failedActivity = [];
   state.lastSummary = null;
   state.lastManifestId = null;
   state.lastJobError = null;
@@ -93,7 +96,8 @@ var VIDEO_ROUTED_PATHS = new Set([
   "verify",
   "manifests",
   "undo",
-  "health"
+  "health",
+  "open-destination"
 ]);
 var VIDEO_ROUTED_PREFIXES = [
   "stream/",
@@ -1173,12 +1177,13 @@ function createLibrary(opts) {
 }
 
 // src/client/lightbox.ts
-function createLightbox(getFiles) {
+function createLightbox(getFiles, onCompare) {
   const overlay = $("lightbox");
   const titleEl = $("lightboxTitle");
   const counterEl = $("lightboxCounter");
   const infoEl = $("lightboxInfo");
   const closeBtn = $("lightboxClose");
+  const compareBtn = document.getElementById("lightboxCompare");
   const prevBtn = $("lightboxPrev");
   const nextBtn = $("lightboxNext");
   const imgEl = $("lightboxImg");
@@ -1197,6 +1202,9 @@ function createLightbox(getFiles) {
     infoEl.textContent = `${fmt(file.size)} · ${file.ext.toUpperCase()}`;
     prevBtn.disabled = currentFiles.length <= 1;
     nextBtn.disabled = currentFiles.length <= 1;
+    if (compareBtn) {
+      compareBtn.style.display = file.category !== "other" ? "" : "none";
+    }
     spinnerEl.classList.remove("hidden");
     imgEl.classList.add("loading");
     const fullSrc = `/api/view-image?rel=${encodeURIComponent(file.rel)}`;
@@ -1252,6 +1260,16 @@ function createLightbox(getFiles) {
     closeBtn.focus();
   };
   closeBtn.addEventListener("click", close);
+  if (compareBtn && onCompare) {
+    compareBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const targetRel = activeRel;
+      if (targetRel) {
+        close();
+        onCompare(targetRel);
+      }
+    });
+  }
   nextBtn.addEventListener("click", (e) => {
     e.stopPropagation();
     next();
@@ -1355,7 +1373,7 @@ var warningsFor = (p) => {
       severity: "warning",
       title: `Over budget by ${fmt(p.budget.overBy)}`,
       body: first ? `Dropping ${first.rel} would bring the plan to ${fmt(first.runningTotalAfterDrop)}${first.getsUnderBudget ? " — under budget." : ", still over budget."}` : "The projected output is larger than the storage budget.",
-      action: { label: "Review by folder", kind: "budget" }
+      action: first ? { label: `Drop ${first.rel}`, kind: "drop-suggested", targetFolder: first.rel } : { label: "Review by folder", kind: "budget" }
     });
   }
   if (p.freeBytes != null && p.estOutputBytes > p.freeBytes) {
@@ -1488,7 +1506,7 @@ function createPlan(opts) {
     warningHost.innerHTML = warnings.map((warning) => `<div class="warning-card" data-severity="${warning.severity}">
         <span class="warning-icon">${icon(warningIcon(warning.severity), 15)}</span>
         <span class="warning-text"><b>${escapeHtml(warning.title)}</b>${warning.body ? `<br>${escapeHtml(warning.body)}` : ""}</span>
-        ${warning.action ? `<button class="warning-action" type="button" data-plan-action="${warning.action.kind}">${escapeHtml(warning.action.label)}</button>` : ""}
+        ${warning.action ? `<button class="warning-action" type="button" data-plan-action="${warning.action.kind}"${warning.action.targetFolder ? ` data-target-folder="${escapeHtml(warning.action.targetFolder)}"` : ""}>${escapeHtml(warning.action.label)}</button>` : ""}
       </div>`).join("");
     $("folderSplit").innerHTML = folderRows(p);
     $("folderMeta").textContent = `${p.byFolder.length.toLocaleString()} folder${p.byFolder.length === 1 ? "" : "s"} in scope`;
@@ -1528,6 +1546,11 @@ function createPlan(opts) {
       opts.onHealth();
     if (target.dataset.planAction === "budget")
       opts.onReviewBudget();
+    if (target.dataset.planAction === "drop-suggested") {
+      const folder = target.dataset.targetFolder;
+      if (folder)
+        opts.onExcludeFolder?.(folder);
+    }
   });
   return { render };
 }
@@ -1556,10 +1579,16 @@ function createRunLifecycle(options) {
     state.activity.push(file);
     if (state.activity.length > 500)
       state.activity.splice(0, state.activity.length - 500);
+    if (file.status === "failed") {
+      state.failedActivity.push(file);
+      if (state.failedActivity.length > 500)
+        state.failedActivity.splice(0, state.failedActivity.length - 500);
+    }
     state.run.lastRel = file.rel;
     state.run.lastStatus = file.status;
   };
   const finish = (p) => {
+    document.title = "Compakta";
     state.es?.close();
     state.es = null;
     state.currentJob = null;
@@ -1577,6 +1606,9 @@ function createRunLifecycle(options) {
       state.run.skipped = summary.skipped;
       state.run.failed = summary.failed;
       state.run.bytes = summary.bytes;
+      if (summary.inBytes != null) {
+        state.run.inBytes = summary.inBytes;
+      }
       state.run.elapsedSeconds = summary.elapsedSeconds;
       state.run.etaSeconds = null;
     }
@@ -1592,6 +1624,13 @@ function createRunLifecycle(options) {
     } else if (summary) {
       const failed = summary.failed ? `, ${summary.failed.toLocaleString()} failed` : "";
       options.onInfo(`Done. ${summary.converted.toLocaleString()} converted, ${summary.copied.toLocaleString()} copied${failed} → ${fmt(summary.bytes)}.`);
+    }
+    if (typeof Notification !== "undefined" && Notification.permission === "granted" && document.hidden) {
+      try {
+        const title = summary?.note === "cancelled" ? "Compakta run cancelled" : "Compakta run complete";
+        const body = summary ? `${summary.converted.toLocaleString()} converted, ${summary.copied.toLocaleString()} copied${summary.failed ? `, ${summary.failed} failed` : ""}` : "Conversion finished";
+        new Notification(title, { body });
+      } catch {}
     }
     options.onFinished();
   };
@@ -1622,9 +1661,12 @@ function createRunLifecycle(options) {
       state.run.skipped = event.skipped ?? state.run.skipped;
       state.run.failed = event.failed ?? state.run.failed;
       state.run.bytes = event.bytes ?? state.run.bytes;
+      state.run.inBytes = event.inBytes ?? state.run.inBytes;
       state.run.etaSeconds = event.etaSeconds ?? null;
       state.run.elapsedSeconds = event.elapsedSeconds ?? state.run.elapsedSeconds;
       state.run.inFlight = event.inFlight ?? state.run.inFlight;
+      const pct = state.run.total > 0 ? Math.round(state.run.done / state.run.total * 100) : 0;
+      document.title = `(${pct}%) Compakta`;
       if (event.starting) {
         state.run.startingRel = event.starting.rel;
         state.run.startingBytes = event.starting.bytes;
@@ -1773,6 +1815,9 @@ function createRunLifecycle(options) {
   const start = async (runOptions = {}) => {
     if (isActive())
       return;
+    if (typeof Notification !== "undefined" && Notification.permission === "default") {
+      Notification.requestPermission().catch(() => {});
+    }
     state.starting = true;
     render();
     try {
@@ -1848,6 +1893,7 @@ function createRunLifecycle(options) {
     render();
   };
   const cancel = async () => {
+    document.title = "Compakta";
     await post(`cancel/${encodeURIComponent(state.currentJob ?? "")}`, "Cancelling…");
   };
   const setJobs = (jobs) => {
@@ -2179,6 +2225,12 @@ function createAuditView(actions) {
       </div>
       <p>${data.pendingSourceBytes ? `${fmt(data.pendingSourceBytes)} of source still needs work.` : "No source bytes are pending."}</p>
       ${data.orphanCount ? `<p class="warn">${data.orphanCount.toLocaleString()} output file(s) (${fmt(data.orphanBytes)}) have no matching source.</p>
+      ${data.orphans.length ? `<details class="orphan-details" style="margin-top:6px;margin-bottom:8px">
+        <summary style="cursor:pointer;font-size:12px;color:var(--text-secondary)">Inspect orphan files (${data.orphans.length.toLocaleString()})</summary>
+        <div class="result-box" style="max-height:160px;overflow-y:auto;margin-top:6px;font-family:var(--font-mono);font-size:11px;">
+          ${data.orphans.map((o) => `<div>${escapeHtml(base(o.out))} <span class="muted">(${fmt(o.bytes)})</span></div>`).join("")}
+        </div>
+      </details>` : ""}
       <div class="drawer-actions" style="margin-bottom:8px">
         <button class="btn danger sm" type="button" data-sync-clean-orphans>Remove ${data.orphanCount.toLocaleString()} orphan file(s) (${fmt(data.orphanBytes)})</button>
       </div>` : ""}
@@ -2261,7 +2313,16 @@ function createAuditView(actions) {
         <div class="summary-stat"><span class="micro-label">Undated</span><b style="color:var(--status-${data.undated.length ? "warning" : "success"})">${data.undated.length.toLocaleString()}</b></div>
         <div class="summary-stat"><span class="micro-label">In scope</span><b>${data.inScope.toLocaleString()}</b></div>
       </div>
-      ${data.undated.length ? `<p>e.g. ${data.undated.slice(0, 3).map((path) => escapeHtml(base(path))).join(", ")}</p>` : `<p class="ok">Every scanned file has a date.</p>`}
+      ${data.undated.length ? `<p>e.g. ${data.undated.slice(0, 3).map((path) => escapeHtml(base(path))).join(", ")}</p>
+      <details class="undated-details" style="margin-top:6px;margin-bottom:8px">
+        <summary style="cursor:pointer;font-size:12px;color:var(--text-secondary)">Inspect undated files (${data.undated.length.toLocaleString()})</summary>
+        <div class="result-box" style="max-height:160px;overflow-y:auto;margin-top:6px;font-family:var(--font-mono);font-size:11px;">
+          ${data.undated.map((path) => `<div>${escapeHtml(base(path))}</div>`).join("")}
+        </div>
+      </details>
+      <div class="drawer-actions" style="margin-bottom:8px">
+        <button class="btn sm" type="button" data-exclude-undated="${data.undated.length}">Exclude ${data.undated.length.toLocaleString()} undated files</button>
+      </div>` : `<p class="ok">Every scanned file has a date.</p>`}
       ${data.truncated ? `<p class="warn">${data.omitted.toLocaleString()} files were outside the sampled limit; raise the limit for a complete audit.</p>` : ""}
       ${years.length ? `<div class="year-grid">${years.map(([year, count]) => `<span class="year-chip">${escapeHtml(year)} <b>${count.toLocaleString()}</b></span>`).join("")}</div>` : ""}
       <div class="drawer-actions"><button class="btn ghost sm" type="button" data-audit-run="dates">Run again</button></div>
@@ -2394,6 +2455,32 @@ function createAuditView(actions) {
         actions.refreshPreview();
         actions.toast(`Excluded ${removed.toLocaleString()} duplicate files from the selection.`, "success");
       })();
+      return;
+    }
+    const excludeUndated = target.closest("[data-exclude-undated]");
+    if (excludeUndated && datesData?.undated.length) {
+      const list = datesData.undated;
+      (async () => {
+        const ok = await actions.confirm({
+          title: "Exclude undated files?",
+          body: `<p class="modal-copy">Exclude <strong>${list.length.toLocaleString()} undated files</strong> from the conversion?</p>
+                 <p class="modal-copy">Originals stay on disk; only the selection changes.</p>`,
+          confirmLabel: `Exclude ${list.length.toLocaleString()} files`,
+          danger: false
+        });
+        if (!ok)
+          return;
+        let count = 0;
+        for (const rel of list) {
+          state.excludedFiles.add(rel);
+          state.includedFiles.delete(rel);
+          count++;
+        }
+        actions.refreshTree();
+        actions.refreshPreview();
+        actions.toast(`Excluded ${count.toLocaleString()} undated files from the selection.`, "success");
+      })();
+      return;
     }
   });
   return { open, close, isOpen, handleKey };
@@ -2440,6 +2527,20 @@ function createCompareView(actions) {
   let activeFormat = state.currentFormat;
   let isDraggingSplitter = false;
   let stagePointerBound = false;
+  let panX = 0;
+  let panY = 0;
+  let isPanning = false;
+  const applyImageTransforms = () => {
+    const stage = $("compareStage");
+    const imgs = stage.querySelectorAll(".compare-pane img");
+    if (!imgs.length)
+      return;
+    const transform = state.compareZoom > 0 ? `translate(${panX}px, ${panY}px) scale(${state.compareZoom})` : "";
+    imgs.forEach((img) => {
+      img.style.transform = transform;
+      img.style.transformOrigin = "center center";
+    });
+  };
   const fileList = () => actions.selectedFiles();
   const syncFileSelect = (rel) => {
     const select = $("compareFileSelect");
@@ -2665,6 +2766,7 @@ function createCompareView(actions) {
     $("compareErrors").innerHTML = data.errors.length ? data.errors.map((error) => `<p>${escapeHtml(error)}</p>`).join("") : "";
     setupSplitterEvents(stage);
     setupDockEvents();
+    applyImageTransforms();
     const img = stage.querySelector(".compare-pane.original img");
     if (img) {
       if (img.complete && img.naturalWidth) {
@@ -2748,8 +2850,42 @@ function createCompareView(actions) {
     });
     if (!stagePointerBound) {
       stagePointerBound = true;
+      stage.addEventListener("wheel", (e) => {
+        e.preventDefault();
+        if (e.deltaY < 0) {
+          setZoom(state.compareZoom === 0 ? 1 : Math.min(3, Number((state.compareZoom + 0.15).toFixed(2))));
+        } else if (e.deltaY > 0) {
+          setZoom(state.compareZoom <= 0.2 ? 0 : Math.max(0, Number((state.compareZoom - 0.15).toFixed(2))));
+        }
+      }, { passive: false });
       stage.addEventListener("pointerdown", (e) => {
         if (e.target.closest(".canvas-dock, .frosted-badge, .compare-split-handle")) {
+          return;
+        }
+        if (state.compareZoom > 0) {
+          isPanning = true;
+          const startX = e.clientX;
+          const startY = e.clientY;
+          const origPanX = panX;
+          const origPanY = panY;
+          stage.style.cursor = "grabbing";
+          const onPanMove = (me) => {
+            if (!isPanning)
+              return;
+            panX = origPanX + (me.clientX - startX);
+            panY = origPanY + (me.clientY - startY);
+            applyImageTransforms();
+          };
+          const onPanUp = () => {
+            isPanning = false;
+            stage.style.cursor = "";
+            window.removeEventListener("pointermove", onPanMove);
+            window.removeEventListener("pointerup", onPanUp);
+            window.removeEventListener("pointercancel", onPanUp);
+          };
+          window.addEventListener("pointermove", onPanMove);
+          window.addEventListener("pointerup", onPanUp);
+          window.addEventListener("pointercancel", onPanUp);
           return;
         }
         if (state.compareMode === "toggle") {
@@ -2824,6 +2960,8 @@ function createCompareView(actions) {
       activeFormat = format;
     dimensions = null;
     state.compareVariant = 0;
+    panX = 0;
+    panY = 0;
     $("compareEmpty").innerHTML = `
       <div class="empty-state">
         <svg width="24" height="24" aria-hidden="true"><use href="#i-loader"></use></svg>
@@ -2864,6 +3002,8 @@ function createCompareView(actions) {
   const open = (rel) => {
     actions.switchView("compare");
     activeFormat = state.currentFormat;
+    panX = 0;
+    panY = 0;
     const files = fileList();
     const wanted = rel ?? state.compareRel;
     const chosen = rel ?? (wanted && files.some((f) => f.rel === wanted) ? wanted : files[0]?.rel);
@@ -2900,6 +3040,10 @@ function createCompareView(actions) {
   };
   const setZoom = (next) => {
     state.compareZoom = Math.max(0, Math.min(3, next));
+    if (state.compareZoom === 0) {
+      panX = 0;
+      panY = 0;
+    }
     const slider = document.getElementById("compareZoomSlider");
     if (slider) {
       const displayVal = Math.round(state.compareZoom * 100);
@@ -2911,10 +3055,7 @@ function createCompareView(actions) {
     const stage = $("compareStage");
     const imgs = stage.querySelectorAll(".compare-pane img");
     if (imgs.length) {
-      const transform = state.compareZoom > 0 ? `scale(${state.compareZoom})` : "";
-      imgs.forEach((img) => {
-        img.style.transform = transform;
-      });
+      applyImageTransforms();
       document.getElementById("btnDockFit")?.classList.toggle("active", state.compareZoom === 0);
       document.getElementById("btnDock100")?.classList.toggle("active", state.compareZoom === 1);
     } else {
@@ -3036,6 +3177,18 @@ function createCompareView(actions) {
       const step = event.key === "]" ? 1 : -1;
       state.compareVariant = (state.compareVariant + step + count) % count;
       renderStage();
+      return true;
+    }
+    if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+      event.preventDefault();
+      const files = fileList();
+      if (files.length <= 1)
+        return true;
+      const idx = files.findIndex((f) => f.rel === state.compareRel);
+      const step = event.key === "ArrowRight" ? 1 : -1;
+      const nextIdx = (idx + step + files.length) % files.length;
+      const nextRel = files[nextIdx].rel;
+      run(nextRel, activeFormat);
       return true;
     }
     return false;
@@ -3243,6 +3396,33 @@ function createRunView(actions) {
   let dockDismissed = false;
   let lastDockState = "";
   let verifying = false;
+  let showFailedOnly = false;
+  const btnFilterFailed = document.getElementById("btnRunFilterFailed");
+  const btnCopyFailed = document.getElementById("btnRunCopyFailed");
+  if (btnFilterFailed) {
+    btnFilterFailed.addEventListener("click", () => {
+      showFailedOnly = !showFailedOnly;
+      btnFilterFailed.setAttribute("aria-pressed", String(showFailedOnly));
+      btnFilterFailed.classList.toggle("primary", showFailedOnly);
+      $("runActivity").innerHTML = activityHtml();
+    });
+  }
+  if (btnCopyFailed) {
+    btnCopyFailed.addEventListener("click", () => {
+      const failed = state.activity.filter((f) => f.status === "failed");
+      if (!failed.length) {
+        actions.toast("No failed files to copy.");
+        return;
+      }
+      const text = failed.map((f) => `${f.rel}${f.error ? `	${f.error}` : ""}`).join(`
+`);
+      navigator.clipboard.writeText(text).then(() => {
+        actions.toast(`Copied ${failed.length} failed file path(s) to clipboard.`);
+      }).catch(() => {
+        actions.toast("Failed to write to clipboard.");
+      });
+    });
+  }
   const percent = () => state.run.total > 0 ? Math.min(100, state.run.done / state.run.total * 100) : 0;
   const countsHtml = () => {
     const r = state.run;
@@ -3301,15 +3481,20 @@ function createRunView(actions) {
     lastDockState = r.state;
   };
   const activityHtml = () => {
-    if (!state.activity.length) {
-      return `<p class="empty-note" style="padding:14px">Results appear here as files finish.</p>`;
+    const list = showFailedOnly ? state.activity.filter((f) => f.status === "failed") : state.activity;
+    if (!list.length) {
+      return `<p class="empty-note" style="padding:14px">${showFailedOnly ? "No failed files recorded." : "Results appear here as files finish."}</p>`;
     }
-    const rows = state.activity.slice(-200).reverse();
+    const rows = list.slice(-200).reverse();
     return rows.map((f) => {
       const out = f.outBytes > 0 ? fmt(f.outBytes) : "—";
+      const errHtml = f.error ? `<span class="activity-err" title="${escapeHtml(f.error)}">${escapeHtml(f.error)}</span>` : "";
       return `<div class="activity-row">
           <span class="activity-status ${f.status}">${icon(statusIcon(f.status), 14)}</span>
-          <span class="activity-name" title="${escapeHtml(f.rel)}">${escapeHtml(f.rel)}</span>
+          <div class="activity-main">
+            <span class="activity-name" title="${escapeHtml(f.rel)}">${escapeHtml(f.rel)}</span>
+            ${errHtml}
+          </div>
           <span class="activity-type">${f.status}</span>
           <span class="activity-time">${f.seconds > 0 ? f.seconds.toFixed(1) + "s" : "—"}</span>
           <span class="activity-size">${out}</span>
@@ -3336,6 +3521,9 @@ function createRunView(actions) {
     const tone = state.run.state === "failed" || failed ? "bad" : "ok";
     const title = state.run.state === "failed" ? "Run failed" : s.note === "cancelled" ? "Run cancelled" : "Run complete";
     const sub = s.note === "cancelled" ? `Stopped after ${dur(s.elapsedSeconds)}. Completed files are on disk and will be skipped next time.` : `Finished in ${dur(s.elapsedSeconds)} · ${fmt(s.bytes)} written`;
+    const inBytes = s.inBytes ?? state.run.inBytes ?? 0;
+    const savedBytes = inBytes > 0 ? inBytes - s.bytes : 0;
+    const savedPct = inBytes > 0 ? savedBytes / inBytes * 100 : 0;
     return `<div class="run-results" data-tone="${tone}">
       <div class="results-head">
         <span class="health-icon" style="background:var(--status-${failed ? "danger" : "success"}-soft);color:var(--status-${failed ? "danger" : "success"})">${icon(failed ? "alert-octagon" : "check-circle", 18)}</span>
@@ -3346,9 +3534,11 @@ function createRunView(actions) {
         <div class="result-card"><span class="micro-label">Copied</span><b>${s.copied.toLocaleString()}</b></div>
         <div class="result-card"><span class="micro-label">Skipped</span><b>${s.skipped.toLocaleString()}</b></div>
         <div class="result-card"><span class="micro-label">Failed</span><b style="${failed ? "color:var(--status-danger)" : ""}">${s.failed.toLocaleString()}</b></div>
+        ${inBytes > 0 ? `<div class="result-card"><span class="micro-label">Space saved</span><b>${savedBytes >= 0 ? fmt(savedBytes) : `−${fmt(Math.abs(savedBytes))}`} (${savedPct.toFixed(1)}%)</b></div>` : ""}
       </div>
       <div class="results-actions">
         <button class="btn secondary sm" type="button" data-run-action="workspace">Convert more</button>
+        <button class="btn sm" type="button" data-run-action="open-folder">Open folder</button>
         ${state.lastJobId ? `<button class="btn sm" type="button" data-run-action="verify">Verify outputs</button>` : ""}
         ${state.lastManifestId ? `<button class="btn danger sm" type="button" data-run-action="undo">Undo this run</button>` : ""}
       </div>
@@ -3396,6 +3586,8 @@ function createRunView(actions) {
     const action = button.dataset.runAction;
     if (action === "workspace")
       actions.switchView("workspace");
+    if (action === "open-folder")
+      actions.openDestination?.();
     if (action === "undo" && state.lastManifestId) {
       actions.undoManifest(state.lastManifestId, state.lastSummary ?? undefined);
     }
@@ -3461,6 +3653,13 @@ function createRunsView(actions) {
     const spec = state.formatSpecs[manifest.outputFormat];
     const format = spec?.shortLabel ?? manifest.outputFormat;
     const quality = manifest.quality.length ? manifest.quality.join(", ") : "—";
+    const inBytes = manifest.summary.inBytes;
+    let sizeCell = fmt(manifest.summary.bytes);
+    if (inBytes != null && inBytes > 0) {
+      const saved = inBytes - manifest.summary.bytes;
+      const pct = saved / inBytes * 100;
+      sizeCell = `${fmt(manifest.summary.bytes)} <span class="muted" title="Original: ${fmt(inBytes)} (${saved >= 0 ? "saved" : "increased by"} ${fmt(Math.abs(saved))})">(${pct >= 0 ? "−" : "+"}${Math.abs(pct).toFixed(0)}%)</span>`;
+    }
     return `<tr>
       <td class="run-id">${escapeHtml(manifest.id)}</td>
       <td title="${new Date(manifest.createdAt).toLocaleString()}">${escapeHtml(relativeTime(manifest.createdAt))}</td>
@@ -3468,9 +3667,10 @@ function createRunsView(actions) {
       <td class="num">${manifest.summary.converted.toLocaleString()}</td>
       <td class="num">${manifest.summary.copied.toLocaleString()}</td>
       <td class="num"${manifest.summary.failed ? ' style="color:var(--status-danger)"' : ""}>${manifest.summary.failed.toLocaleString()}</td>
-      <td class="num">${fmt(manifest.summary.bytes)}</td>
+      <td class="num">${sizeCell}</td>
       <td><span class="run-destination" title="${escapeHtml(manifest.destination)}">${escapeHtml(manifest.destination)}</span></td>
       <td class="actions-cell">
+        <button class="btn ghost sm" type="button" data-open-dest="${escapeHtml(manifest.destination)}" title="Open destination folder in file manager">Open</button>
         <button class="btn ghost sm" type="button" data-undo-id="${escapeHtml(manifest.id)}">Undo</button>
       </td>
     </tr>`;
@@ -3500,6 +3700,11 @@ function createRunsView(actions) {
     }
   };
   $("runsBody").addEventListener("click", (event) => {
+    const openBtn = event.target.closest("[data-open-dest]");
+    if (openBtn?.dataset.openDest) {
+      actions.openDestination?.(openBtn.dataset.openDest);
+      return;
+    }
     const button = event.target.closest("[data-undo-id]");
     if (!button?.dataset.undoId)
       return;
@@ -3663,6 +3868,7 @@ var refreshStatus = async () => {
   try {
     const status = await api("status");
     applyStatusMeta(status);
+    renderRecentSources(status.recentSources);
     formatUi.refreshCards();
     return status;
   } catch (error) {
@@ -3787,6 +3993,19 @@ var clearDestError = () => {
   node.className = "inline-msg hidden";
   node.textContent = "";
 };
+var renderRecentSources = (sources) => {
+  const list = document.getElementById("recentSources");
+  if (!list)
+    return;
+  list.innerHTML = "";
+  if (!sources || !sources.length)
+    return;
+  for (const src of sources) {
+    const opt = document.createElement("option");
+    opt.value = src;
+    list.appendChild(opt);
+  }
+};
 var applySource = async (silent = false) => {
   const source = input("sourceRoot").value.trim();
   const previousSource = state.status?.sourceRoot ?? "";
@@ -3830,7 +4049,9 @@ var applySource = async (silent = false) => {
       body: { sourceRoot: source }
     });
     state.status && (state.status.scanned = true);
-    library.setScan(scan, true);
+    library.setScan(scan, source !== previousSource);
+    renderRecentSources(scan.recentSources);
+    renderExtToggles();
     state.lastEstimate = null;
     state.lastSync = null;
     state.preview = null;
@@ -4122,17 +4343,29 @@ var renderExtToggles = () => {
   const host = $("extToggles");
   host.innerHTML = "";
   const allowed = state.mediaMode === "video" ? VIDEO_EXTS : CONVERT_EXTS;
+  const stats = {};
+  if (library && state.tree) {
+    for (const f of library.allFiles()) {
+      const key = f.ext.toLowerCase();
+      if (!stats[key])
+        stats[key] = { count: 0, bytes: 0 };
+      stats[key].count++;
+      stats[key].bytes += f.size;
+    }
+  }
   for (const ext of allowed) {
     const enabled = extEnabled[ext] ?? true;
+    const s = stats[ext.toLowerCase()];
+    const fileCount = s?.count ?? 0;
+    const bytes = s?.bytes ?? 0;
     const chip = document.createElement("button");
     chip.type = "button";
-    chip.className = "ext-chip" + (enabled ? " on" : "");
-    chip.textContent = `.${ext}`;
-    chip.title = `${enabled ? "Include" : "Skip"} .${ext} files`;
+    chip.className = "ext-chip" + (enabled ? " on" : "") + (fileCount === 0 && state.tree ? " zero" : "");
+    chip.textContent = fileCount > 0 ? `.${ext} (${fileCount.toLocaleString()})` : `.${ext}`;
+    chip.title = fileCount > 0 ? `${fileCount.toLocaleString()} files · ${fmt(bytes)} · ${enabled ? "Click to skip" : "Click to include"}` : `${enabled ? "Include" : "Skip"} .${ext} files (0 found)`;
     chip.addEventListener("click", () => {
       extEnabled[ext] = !enabled;
-      chip.classList.toggle("on", extEnabled[ext]);
-      chip.title = `${extEnabled[ext] ? "Include" : "Skip"} .${ext} files`;
+      renderExtToggles();
       schedulePreview();
     });
     host.append(chip);
@@ -4316,7 +4549,17 @@ var actions = {
   refreshStatusMagick: async () => {
     await refreshStatus();
   },
-  installMagick: () => installMagick()
+  installMagick: () => installMagick(),
+  openDestination: async (target) => {
+    try {
+      await api("open-destination", {
+        method: "POST",
+        body: target ? { destination: target } : {}
+      });
+    } catch (err) {
+      toast(formatError(err), "danger");
+    }
+  }
 };
 var imKind = (im) => im.assetKind === "appimage" ? "AppImage" : "portable build";
 var renderImPill = (im) => {
@@ -4754,6 +4997,7 @@ var boot = async () => {
   try {
     const status = await api("status");
     applyStatusMeta(status);
+    renderRecentSources(status.recentSources);
     state.excluded = new Set(status.policy.excludedFolders);
     state.included = new Set(status.policy.includedFolders);
     state.excludedFiles = new Set(status.policy.excludedFiles);
@@ -4793,6 +5037,8 @@ var boot = async () => {
     if (status.scanned) {
       const scan = await api("scan", { method: "POST", body: {} });
       library.setScan(scan, false);
+      renderRecentSources(scan.recentSources);
+      renderExtToggles();
       await refreshPreview();
     } else if (status.sourceRoot) {
       plan.render();
@@ -4829,7 +5075,7 @@ library = createLibrary({
   onOpenLightbox: (rel, getFiles) => lightbox.open(rel, getFiles),
   onCompareFile: (rel) => compareView.open(rel)
 });
-lightbox = createLightbox(() => library.allFiles());
+lightbox = createLightbox(() => library.allFiles(), (rel) => compareView.open(rel));
 plan = createPlan({
   onStart: () => void runLifecycle.start(),
   onStartBoth: () => void startBothModes(),
@@ -4842,6 +5088,13 @@ plan = createPlan({
     if (state.view !== "workspace")
       switchView("workspace");
     $("folderSection").scrollIntoView({ block: "start", behavior: "smooth" });
+  },
+  onExcludeFolder: (rel) => {
+    state.excluded.add(rel);
+    state.included.delete(rel);
+    library.refresh();
+    updateChrome();
+    schedulePreview();
   }
 });
 formatUi = createFormatUi({

@@ -81,6 +81,12 @@ export function createAuditView(actions: ViewActions): AuditViewController {
       </div>
       <p>${data.pendingSourceBytes ? `${fmt(data.pendingSourceBytes)} of source still needs work.` : "No source bytes are pending."}</p>
       ${data.orphanCount ? `<p class="warn">${data.orphanCount.toLocaleString()} output file(s) (${fmt(data.orphanBytes)}) have no matching source.</p>
+      ${data.orphans.length ? `<details class="orphan-details" style="margin-top:6px;margin-bottom:8px">
+        <summary style="cursor:pointer;font-size:12px;color:var(--text-secondary)">Inspect orphan files (${data.orphans.length.toLocaleString()})</summary>
+        <div class="result-box" style="max-height:160px;overflow-y:auto;margin-top:6px;font-family:var(--font-mono);font-size:11px;">
+          ${data.orphans.map((o) => `<div>${escapeHtml(base(o.out))} <span class="muted">(${fmt(o.bytes)})</span></div>`).join("")}
+        </div>
+      </details>` : ""}
       <div class="drawer-actions" style="margin-bottom:8px">
         <button class="btn danger sm" type="button" data-sync-clean-orphans>Remove ${data.orphanCount.toLocaleString()} orphan file(s) (${fmt(data.orphanBytes)})</button>
       </div>` : ""}
@@ -168,7 +174,16 @@ export function createAuditView(actions: ViewActions): AuditViewController {
         <div class="summary-stat"><span class="micro-label">Undated</span><b style="color:var(--status-${data.undated.length ? "warning" : "success"})">${data.undated.length.toLocaleString()}</b></div>
         <div class="summary-stat"><span class="micro-label">In scope</span><b>${data.inScope.toLocaleString()}</b></div>
       </div>
-      ${data.undated.length ? `<p>e.g. ${data.undated.slice(0, 3).map((path) => escapeHtml(base(path))).join(", ")}</p>` : `<p class="ok">Every scanned file has a date.</p>`}
+      ${data.undated.length ? `<p>e.g. ${data.undated.slice(0, 3).map((path) => escapeHtml(base(path))).join(", ")}</p>
+      <details class="undated-details" style="margin-top:6px;margin-bottom:8px">
+        <summary style="cursor:pointer;font-size:12px;color:var(--text-secondary)">Inspect undated files (${data.undated.length.toLocaleString()})</summary>
+        <div class="result-box" style="max-height:160px;overflow-y:auto;margin-top:6px;font-family:var(--font-mono);font-size:11px;">
+          ${data.undated.map((path) => `<div>${escapeHtml(base(path))}</div>`).join("")}
+        </div>
+      </details>
+      <div class="drawer-actions" style="margin-bottom:8px">
+        <button class="btn sm" type="button" data-exclude-undated="${data.undated.length}">Exclude ${data.undated.length.toLocaleString()} undated files</button>
+      </div>` : `<p class="ok">Every scanned file has a date.</p>`}
       ${data.truncated ? `<p class="warn">${data.omitted.toLocaleString()} files were outside the sampled limit; raise the limit for a complete audit.</p>` : ""}
       ${years.length ? `<div class="year-grid">${years.map(([year, count]) => `<span class="year-chip">${escapeHtml(year)} <b>${count.toLocaleString()}</b></span>`).join("")}</div>` : ""}
       <div class="drawer-actions"><button class="btn ghost sm" type="button" data-audit-run="dates">Run again</button></div>
@@ -304,6 +319,31 @@ export function createAuditView(actions: ViewActions): AuditViewController {
         void actions.refreshPreview();
         actions.toast(`Excluded ${removed.toLocaleString()} duplicate files from the selection.`, "success");
       })();
+      return;
+    }
+    const excludeUndated = target.closest<HTMLButtonElement>("[data-exclude-undated]");
+    if (excludeUndated && datesData?.undated.length) {
+      const list = datesData.undated;
+      void (async () => {
+        const ok = await actions.confirm({
+          title: "Exclude undated files?",
+          body: `<p class="modal-copy">Exclude <strong>${list.length.toLocaleString()} undated files</strong> from the conversion?</p>
+                 <p class="modal-copy">Originals stay on disk; only the selection changes.</p>`,
+          confirmLabel: `Exclude ${list.length.toLocaleString()} files`,
+          danger: false,
+        });
+        if (!ok) return;
+        let count = 0;
+        for (const rel of list) {
+          state.excludedFiles.add(rel);
+          state.includedFiles.delete(rel);
+          count++;
+        }
+        actions.refreshTree();
+        void actions.refreshPreview();
+        actions.toast(`Excluded ${count.toLocaleString()} undated files from the selection.`, "success");
+      })();
+      return;
     }
   });
 

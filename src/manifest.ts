@@ -37,6 +37,7 @@ export type Manifest = {
     skipped: number;
     failed: number;
     bytes: number;
+    inBytes?: number;
   };
 };
 
@@ -67,6 +68,7 @@ export async function writeManifest(
       skipped: results.filter((r) => r.status === "skipped").length,
       failed: results.filter((r) => r.status === "failed").length,
       bytes: results.reduce((a, r) => a + r.outBytes, 0),
+      inBytes: results.reduce((a, r) => a + r.inBytes, 0),
     },
   };
 

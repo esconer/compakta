@@ -218,7 +218,8 @@
             <span id="sourceInfo" class="source-info"></span>
           </div>
           <div class="path-row">
-            <input id="sourceRoot" type="text" spellcheck="false" autocomplete="off" placeholder="D:\Photos">
+            <input id="sourceRoot" type="text" spellcheck="false" autocomplete="off" placeholder="D:\Photos" list="recentSources">
+            <datalist id="recentSources"></datalist>
             <button id="btnPickSource" class="btn icon" type="button" aria-label="Browse for source folder" title="Browse…">
               <svg width="15" height="15" aria-hidden="true"><use href="#i-folder"></use></svg>
             </button>
@@ -730,6 +731,10 @@
       <div class="section-head">
         <h3>Live activity</h3>
         <span id="runActivityMeta" class="section-meta"></span>
+        <div class="activity-actions" style="margin-left: auto; display: flex; gap: 8px;">
+          <button id="btnRunFilterFailed" class="btn ghost xs" type="button" aria-pressed="false" title="Show failed files only">Failed only</button>
+          <button id="btnRunCopyFailed" class="btn ghost xs" type="button" title="Copy paths of failed files to clipboard">Copy failed</button>
+        </div>
       </div>
       <div id="runActivity" class="activity-table">
         <p class="empty-note">Results appear here as files finish.</p>
@@ -902,9 +907,12 @@
       <span id="lightboxCounter" class="lightbox-counter">1 of 1</span>
       <span id="lightboxInfo" class="lightbox-info">0 KB</span>
     </div>
-    <button id="lightboxClose" class="btn icon ghost lightbox-close" type="button" aria-label="Close preview">
-      <svg width="18" height="18" aria-hidden="true"><use href="#i-x"></use></svg>
-    </button>
+    <div class="lightbox-actions" style="margin-left: auto; display: flex; align-items: center; gap: 8px;">
+      <button id="lightboxCompare" class="btn sm ghost" type="button" title="Compare this image against compression preview">Compare</button>
+      <button id="lightboxClose" class="btn icon ghost lightbox-close" type="button" aria-label="Close preview">
+        <svg width="18" height="18" aria-hidden="true"><use href="#i-x"></use></svg>
+      </button>
+    </div>
   </div>
   <div class="lightbox-body">
     <button id="lightboxPrev" class="lightbox-nav prev" type="button" aria-label="Previous image">

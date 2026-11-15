@@ -304,6 +304,20 @@
 .activity-status.failed { color: var(--status-danger); }
 .activity-status.skipped,
 .activity-status.cancelled { color: var(--text-tertiary); }
+.activity-main {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  gap: 2px;
+}
+.activity-err {
+  color: var(--status-danger);
+  font-size: var(--fs-2xs);
+  font-family: var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .activity-name {
   overflow: hidden;
   font-family: var(--font-mono);

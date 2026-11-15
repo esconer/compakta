@@ -39,6 +39,7 @@ const VIDEO_ROUTED_PATHS = new Set([
   "manifests",
   "undo",
   "health",
+  "open-destination",
 ]);
 
 const VIDEO_ROUTED_PREFIXES = [

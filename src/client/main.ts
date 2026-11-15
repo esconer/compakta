@@ -255,6 +255,7 @@ const refreshStatus = async (): Promise<Status | null> => {
   try {
     const status = await api<Status>("status");
     applyStatusMeta(status);
+    renderRecentSources(status.recentSources);
     formatUi.refreshCards();
     return status;
   } catch (error) {
@@ -441,6 +442,18 @@ const clearDestError = (): void => {
   node.textContent = "";
 };
 
+const renderRecentSources = (sources?: string[]): void => {
+  const list = document.getElementById("recentSources");
+  if (!list) return;
+  list.innerHTML = "";
+  if (!sources || !sources.length) return;
+  for (const src of sources) {
+    const opt = document.createElement("option");
+    opt.value = src;
+    list.appendChild(opt);
+  }
+};
+
 const applySource = async (silent = false): Promise<void> => {
   const source = input("sourceRoot").value.trim();
   const previousSource = state.status?.sourceRoot ?? "";
@@ -487,7 +500,9 @@ const applySource = async (silent = false): Promise<void> => {
       body: { sourceRoot: source },
     });
     state.status && (state.status.scanned = true);
-    library.setScan(scan, true);
+    library.setScan(scan, source !== previousSource);
+    renderRecentSources(scan.recentSources);
+    renderExtToggles();
     state.lastEstimate = null;
     state.lastSync = null;
     state.preview = null;
@@ -825,17 +840,30 @@ const renderExtToggles = (): void => {
   const host = $("extToggles");
   host.innerHTML = "";
   const allowed = state.mediaMode === "video" ? VIDEO_EXTS : CONVERT_EXTS;
+  const stats: Record<string, { count: number; bytes: number }> = {};
+  if (library && state.tree) {
+    for (const f of library.allFiles()) {
+      const key = f.ext.toLowerCase();
+      if (!stats[key]) stats[key] = { count: 0, bytes: 0 };
+      stats[key].count++;
+      stats[key].bytes += f.size;
+    }
+  }
   for (const ext of allowed) {
     const enabled = extEnabled[ext] ?? true;
+    const s = stats[ext.toLowerCase()];
+    const fileCount = s?.count ?? 0;
+    const bytes = s?.bytes ?? 0;
     const chip = document.createElement("button");
     chip.type = "button";
-    chip.className = "ext-chip" + (enabled ? " on" : "");
-    chip.textContent = `.${ext}`;
-    chip.title = `${enabled ? "Include" : "Skip"} .${ext} files`;
+    chip.className = "ext-chip" + (enabled ? " on" : "") + (fileCount === 0 && state.tree ? " zero" : "");
+    chip.textContent = fileCount > 0 ? `.${ext} (${fileCount.toLocaleString()})` : `.${ext}`;
+    chip.title = fileCount > 0
+      ? `${fileCount.toLocaleString()} files · ${fmt(bytes)} · ${enabled ? "Click to skip" : "Click to include"}`
+      : `${enabled ? "Include" : "Skip"} .${ext} files (0 found)`;
     chip.addEventListener("click", () => {
       extEnabled[ext] = !enabled;
-      chip.classList.toggle("on", extEnabled[ext]);
-      chip.title = `${extEnabled[ext] ? "Include" : "Skip"} .${ext} files`;
+      renderExtToggles();
       schedulePreview();
     });
     host.append(chip);
@@ -1072,6 +1100,16 @@ const actions: ViewActions = {
     await refreshStatus();
   },
   installMagick: () => installMagick(),
+  openDestination: async (target?: string) => {
+    try {
+      await api("open-destination", {
+        method: "POST",
+        body: target ? { destination: target } : {},
+      });
+    } catch (err) {
+      toast(formatError(err), "danger");
+    }
+  },
 };
 
 // --------------------------------------------------------------------------
@@ -1644,6 +1682,7 @@ const boot = async (): Promise<void> => {
   try {
     const status = await api<Status>("status");
     applyStatusMeta(status);
+    renderRecentSources(status.recentSources);
 
     state.excluded = new Set(status.policy.excludedFolders);
     state.included = new Set(status.policy.includedFolders);
@@ -1689,6 +1728,8 @@ const boot = async (): Promise<void> => {
     if (status.scanned) {
       const scan = await api<ScanResult>("scan", { method: "POST", body: {} });
       library.setScan(scan, false);
+      renderRecentSources(scan.recentSources);
+      renderExtToggles();
       await refreshPreview();
     } else if (status.sourceRoot) {
       // A saved library that has not been scanned yet: build the tree now so
@@ -1735,7 +1776,10 @@ library = createLibrary({
   onCompareFile: (rel) => compareView.open(rel),
 });
 
-lightbox = createLightbox(() => library.allFiles());
+lightbox = createLightbox(
+  () => library.allFiles(),
+  (rel) => compareView.open(rel),
+);
 
 plan = createPlan({
   onStart: () => void runLifecycle.start(),
@@ -1748,6 +1792,13 @@ plan = createPlan({
   onReviewBudget: () => {
     if (state.view !== "workspace") switchView("workspace");
     $("folderSection").scrollIntoView({ block: "start", behavior: "smooth" });
+  },
+  onExcludeFolder: (rel: string) => {
+    state.excluded.add(rel);
+    state.included.delete(rel);
+    library.refresh();
+    updateChrome();
+    void schedulePreview();
   },
 });
 

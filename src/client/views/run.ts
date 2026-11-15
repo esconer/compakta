@@ -42,6 +42,35 @@ export function createRunView(actions: ViewActions): RunViewController {
   let dockDismissed = false;
   let lastDockState = "";
   let verifying = false;
+  let showFailedOnly = false;
+
+  const btnFilterFailed = document.getElementById("btnRunFilterFailed") as HTMLButtonElement | null;
+  const btnCopyFailed = document.getElementById("btnRunCopyFailed") as HTMLButtonElement | null;
+
+  if (btnFilterFailed) {
+    btnFilterFailed.addEventListener("click", () => {
+      showFailedOnly = !showFailedOnly;
+      btnFilterFailed.setAttribute("aria-pressed", String(showFailedOnly));
+      btnFilterFailed.classList.toggle("primary", showFailedOnly);
+      $("runActivity").innerHTML = activityHtml();
+    });
+  }
+
+  if (btnCopyFailed) {
+    btnCopyFailed.addEventListener("click", () => {
+      const failed = state.activity.filter((f) => f.status === "failed");
+      if (!failed.length) {
+        actions.toast("No failed files to copy.");
+        return;
+      }
+      const text = failed.map((f) => `${f.rel}${f.error ? `\t${f.error}` : ""}`).join("\n");
+      navigator.clipboard.writeText(text).then(() => {
+        actions.toast(`Copied ${failed.length} failed file path(s) to clipboard.`);
+      }).catch(() => {
+        actions.toast("Failed to write to clipboard.");
+      });
+    });
+  }
 
   const percent = (): number =>
     state.run.total > 0 ? Math.min(100, (state.run.done / state.run.total) * 100) : 0;
@@ -134,16 +163,23 @@ export function createRunView(actions: ViewActions): RunViewController {
   };
 
   const activityHtml = (): string => {
-    if (!state.activity.length) {
-      return `<p class="empty-note" style="padding:14px">Results appear here as files finish.</p>`;
+    const list = showFailedOnly
+      ? state.activity.filter((f) => f.status === "failed")
+      : state.activity;
+    if (!list.length) {
+      return `<p class="empty-note" style="padding:14px">${showFailedOnly ? "No failed files recorded." : "Results appear here as files finish."}</p>`;
     }
-    const rows = state.activity.slice(-200).reverse();
+    const rows = list.slice(-200).reverse();
     return rows
       .map((f) => {
         const out = f.outBytes > 0 ? fmt(f.outBytes) : "—";
+        const errHtml = f.error ? `<span class="activity-err" title="${escapeHtml(f.error)}">${escapeHtml(f.error)}</span>` : "";
         return `<div class="activity-row">
           <span class="activity-status ${f.status}">${icon(statusIcon(f.status), 14)}</span>
-          <span class="activity-name" title="${escapeHtml(f.rel)}">${escapeHtml(f.rel)}</span>
+          <div class="activity-main">
+            <span class="activity-name" title="${escapeHtml(f.rel)}">${escapeHtml(f.rel)}</span>
+            ${errHtml}
+          </div>
           <span class="activity-type">${f.status}</span>
           <span class="activity-time">${f.seconds > 0 ? f.seconds.toFixed(1) + "s" : "—"}</span>
           <span class="activity-size">${out}</span>
@@ -179,6 +215,10 @@ export function createRunView(actions: ViewActions): RunViewController {
         ? `Stopped after ${dur(s.elapsedSeconds)}. Completed files are on disk and will be skipped next time.`
         : `Finished in ${dur(s.elapsedSeconds)} · ${fmt(s.bytes)} written`;
 
+    const inBytes = s.inBytes ?? state.run.inBytes ?? 0;
+    const savedBytes = inBytes > 0 ? inBytes - s.bytes : 0;
+    const savedPct = inBytes > 0 ? (savedBytes / inBytes) * 100 : 0;
+
     return `<div class="run-results" data-tone="${tone}">
       <div class="results-head">
         <span class="health-icon" style="background:var(--status-${failed ? "danger" : "success"}-soft);color:var(--status-${failed ? "danger" : "success"})">${icon(failed ? "alert-octagon" : "check-circle", 18)}</span>
@@ -189,9 +229,11 @@ export function createRunView(actions: ViewActions): RunViewController {
         <div class="result-card"><span class="micro-label">Copied</span><b>${s.copied.toLocaleString()}</b></div>
         <div class="result-card"><span class="micro-label">Skipped</span><b>${s.skipped.toLocaleString()}</b></div>
         <div class="result-card"><span class="micro-label">Failed</span><b style="${failed ? "color:var(--status-danger)" : ""}">${s.failed.toLocaleString()}</b></div>
+        ${inBytes > 0 ? `<div class="result-card"><span class="micro-label">Space saved</span><b>${savedBytes >= 0 ? fmt(savedBytes) : `−${fmt(Math.abs(savedBytes))}`} (${savedPct.toFixed(1)}%)</b></div>` : ""}
       </div>
       <div class="results-actions">
         <button class="btn secondary sm" type="button" data-run-action="workspace">Convert more</button>
+        <button class="btn sm" type="button" data-run-action="open-folder">Open folder</button>
         ${state.lastJobId ? `<button class="btn sm" type="button" data-run-action="verify">Verify outputs</button>` : ""}
         ${state.lastManifestId ? `<button class="btn danger sm" type="button" data-run-action="undo">Undo this run</button>` : ""}
       </div>
@@ -251,6 +293,7 @@ export function createRunView(actions: ViewActions): RunViewController {
     if (!button) return;
     const action = button.dataset.runAction;
     if (action === "workspace") actions.switchView("workspace");
+    if (action === "open-folder") void actions.openDestination?.();
     if (action === "undo" && state.lastManifestId) {
       void actions.undoManifest(state.lastManifestId, state.lastSummary ?? undefined);
     }

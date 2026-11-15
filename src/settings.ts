@@ -19,6 +19,7 @@ export type PersistedSettings = {
   policy?: Partial<Policy>;
   videoPolicy?: Partial<VideoPolicy>;
   videoCustomDestination?: string;
+  recentSources?: string[];
 };
 
 let currentSettings: PersistedSettings | null = null;
@@ -52,4 +53,14 @@ export function savePersistedSettings(patch: Partial<PersistedSettings>): void {
     try { rmSync(tmpFile, { force: true }); } catch { /* ignore */ }
     /* ignore write failures in read-only environments */
   }
+}
+
+export function recordRecentSource(sourceRoot: string): void {
+  if (!sourceRoot || typeof sourceRoot !== "string") return;
+  const trimmed = sourceRoot.trim();
+  if (!trimmed) return;
+  const settings = loadPersistedSettings();
+  const existing = (settings.recentSources ?? []).filter((s) => s !== trimmed);
+  const updated = [trimmed, ...existing].slice(0, 10);
+  savePersistedSettings({ recentSources: updated });
 }
