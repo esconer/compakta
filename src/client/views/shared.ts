@@ -5,6 +5,7 @@
  * through these actions. That keeps policy payloads, preview ordering, and run
  * state in one place.
  */
+import { escapeHtml } from "../dom";
 import type { ToastKind } from "../dom";
 import type {
   CompareResponse,
@@ -54,9 +55,9 @@ export type ViewActions = {
 
 export const emptyState = (iconName: string, title: string, note: string): string =>
   `<div class="empty-state">
-     <svg width="24" height="24" aria-hidden="true"><use href="#i-${iconName}"></use></svg>
-     <p class="empty-title">${title}</p>
-     <p class="empty-note">${note}</p>
+     <svg width="24" height="24" aria-hidden="true"><use href="#i-${escapeHtml(iconName)}"></use></svg>
+     <p class="empty-title">${escapeHtml(title)}</p>
+     <p class="empty-note">${escapeHtml(note)}</p>
    </div>`;
 
 export const checkIcon = (status: "ok" | "warn" | "fail"): string => {
@@ -67,12 +68,3 @@ export const checkIcon = (status: "ok" | "warn" | "fail"): string => {
 
 export const statusWord = (status: "ok" | "warn" | "fail"): string =>
   status === "ok" ? "OK" : status === "warn" ? "Warning" : "Failed";
-
-export const relativeToNow = (timestamp: number | null): string => {
-  if (!timestamp) return "never";
-  const seconds = Math.max(0, Math.round((Date.now() - timestamp) / 1000));
-  if (seconds < 45) return "just now";
-  if (seconds < 3600) return `${Math.round(seconds / 60)} min ago`;
-  if (seconds < 86_400) return `${Math.round(seconds / 3600)} h ago`;
-  return new Date(timestamp).toLocaleDateString();
-};

@@ -769,8 +769,8 @@
       </div>
       <div class="compare-zoom-slider-wrap">
         <button id="compareZoomOut" class="btn ghost icon xs zoom-step-btn" type="button" aria-label="Zoom out">−</button>
-        <input id="compareZoomSlider" type="range" min="0" max="300" step="10" value="100" class="compare-range-slider" aria-label="Zoom level">
-        <span id="compareZoom" class="compare-zoom-text mono">100%</span>
+        <input id="compareZoomSlider" type="range" min="0" max="300" step="5" value="0" class="compare-range-slider" aria-label="Zoom level">
+        <span id="compareZoom" class="compare-zoom-text mono">Fit</span>
         <button id="compareZoomIn" class="btn ghost icon xs zoom-step-btn" type="button" aria-label="Zoom in">+</button>
       </div>
     </div>
@@ -854,7 +854,7 @@
 
 <!-- ─────────────────────────────── audit drawer ────────────────────────── -->
 <div id="auditBackdrop" class="drawer-backdrop hidden"></div>
-<aside id="auditDrawer" class="drawer hidden" role="dialog" aria-modal="true" aria-labelledby="auditTitle">
+<aside id="auditDrawer" class="drawer hidden" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="auditTitle">
   <header class="drawer-head">
     <div>
       <span class="micro-label">Audits</span>

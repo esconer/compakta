@@ -18,6 +18,7 @@ export type RunsViewController = {
 
 export function createRunsView(actions: ViewActions): RunsViewController {
   let busy = false;
+  let lastManifests: ManifestItem[] = [];
 
   const row = (manifest: ManifestItem): string => {
     const spec = state.formatSpecs[manifest.outputFormat];
@@ -45,6 +46,7 @@ export function createRunsView(actions: ViewActions): RunsViewController {
     try {
       const data = await api<ManifestsResponse>("manifests");
       const manifests = data.manifests ?? [];
+      lastManifests = manifests;
       $("runsCount").textContent = `${manifests.length.toLocaleString()} recorded`;
       if (!manifests.length) {
         $("runsBody").innerHTML = emptyState(
@@ -69,7 +71,8 @@ export function createRunsView(actions: ViewActions): RunsViewController {
     const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-undo-id]");
     if (!button?.dataset.undoId) return;
     const id = button.dataset.undoId;
-    void actions.undoManifest(id).then(refresh);
+    const summary = lastManifests.find((m) => m.id === id)?.summary;
+    void actions.undoManifest(id, summary).then(refresh);
   });
 
   $("runsRefresh").addEventListener("click", () => void refresh());

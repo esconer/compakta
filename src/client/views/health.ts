@@ -196,7 +196,11 @@ export function createHealthView(actions: ViewActions): HealthViewController {
       void api("video/ffmpeg/install", { method: "POST", body: {} })
         .then(() => {
           actions.toast("FFmpeg installed successfully!", "success");
-          return refresh();
+          return api<any>("video/status").then((vStatus) => {
+            state.videoStatus = vStatus;
+            document.getElementById("ffUpdate")?.classList.add("hidden");
+            return refresh();
+          });
         })
         .catch((err: unknown) => actions.toast((err as Error).message, "danger"));
     }

@@ -89,6 +89,22 @@ if (absent.length) {
   console.log(`  all ${referenced.size} literal ids resolve in HTML or are created by the client`);
 }
 
+// ── 2b. Every sprite icon reference must resolve in index.html ─────────────
+const spriteIds = new Set([...html.matchAll(/<symbol\s+id="(i-[^"]+)"/g)].map((m) => m[1]));
+const missingIcons: string[] = [];
+for (const file of sources) {
+  const source = readFileSync(file, "utf8");
+  for (const m of source.matchAll(/\bicon\(\s*"([^"]+)"/g)) {
+    if (!spriteIds.has(`i-${m[1]}`)) missingIcons.push(`i-${m[1]} (${file})`);
+  }
+}
+if (missingIcons.length) {
+  bad++;
+  for (const miss of missingIcons) console.log(`  MISSING sprite symbol: #${miss}`);
+} else {
+  console.log(`  all sprite icon references resolve in index.html`);
+}
+
 // ── 3. The shell must not assume macOS chrome ──────────────────────────────
 console.log(`\n== platform ==`);
 if (/traffic-light|titleBarStyle\s*[:=]\s*["']hiddenInset/.test(html)) {

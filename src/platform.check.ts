@@ -420,7 +420,10 @@ await check("calculates CPU affinity mask correctly for percentages", () => {
 });
 
 await check("applies CPU limit dynamically to process", () => {
-  const child = spawn(process.platform === "win32" ? "cmd.exe" : "sleep", [process.platform === "win32" ? "/c timeout 1" : "1"]);
+  const child = spawn(
+    process.platform === "win32" ? "ping.exe" : "sleep",
+    process.platform === "win32" ? ["-n", "4", "127.0.0.1"] : ["2"],
+  );
   const ok1 = applyProcessCpuLimit(child.pid, 70);
   const ok2 = applyProcessCpuLimit(child.pid, 50);
   assert.equal(typeof ok1, "boolean");
@@ -433,7 +436,10 @@ await check("applies CPU limit dynamically to process", () => {
 });
 
 await check("suspends and resumes process dynamically", () => {
-  const child = spawn(process.platform === "win32" ? "cmd.exe" : "sleep", [process.platform === "win32" ? "/c timeout 2" : "2"]);
+  const child = spawn(
+    process.platform === "win32" ? "ping.exe" : "sleep",
+    process.platform === "win32" ? ["-n", "4", "127.0.0.1"] : ["2"],
+  );
   const sOk = suspendProcess(child.pid);
   const rOk = resumeProcess(child.pid);
   assert.equal(typeof sOk, "boolean");

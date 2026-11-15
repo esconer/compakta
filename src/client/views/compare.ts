@@ -566,10 +566,12 @@ export function createCompareView(actions: ViewActions): CompareViewController {
     const zoomSlider = document.getElementById("compareZoomSlider") as HTMLInputElement | null;
     if (zoomSlider) {
       const displayVal = Math.round(state.compareZoom * 100);
-      zoomSlider.value = String(displayVal || 100);
+      zoomSlider.value = String(displayVal);
       const pct = (Number(zoomSlider.value) / Number(zoomSlider.max || 300)) * 100;
       zoomSlider.style.setProperty("--zoom-fill", `${pct}%`);
     }
+    $("compareZoom").textContent =
+      state.compareZoom > 0 ? `${Math.round(state.compareZoom * 100)}%` : "Fit";
     void run(chosen, activeFormat);
   };
 
@@ -598,7 +600,16 @@ export function createCompareView(actions: ViewActions): CompareViewController {
     }
     $("compareZoom").textContent =
       state.compareZoom > 0 ? `${Math.round(state.compareZoom * 100)}%` : "Fit";
-    renderStage();
+    const stage = $("compareStage");
+    const imgs = stage.querySelectorAll<HTMLImageElement>(".compare-pane img");
+    if (imgs.length) {
+      const transform = state.compareZoom > 0 ? `scale(${state.compareZoom})` : "";
+      imgs.forEach((img) => { img.style.transform = transform; });
+      document.getElementById("btnDockFit")?.classList.toggle("active", state.compareZoom === 0);
+      document.getElementById("btnDock100")?.classList.toggle("active", state.compareZoom === 1);
+    } else {
+      renderStage();
+    }
   };
 
   const zoomIn = (): void =>
@@ -621,7 +632,7 @@ export function createCompareView(actions: ViewActions): CompareViewController {
   // Zoom slider event listeners
   const zoomSlider = document.getElementById("compareZoomSlider") as HTMLInputElement | null;
   if (zoomSlider) {
-    const initialPct = (Number(zoomSlider.value || 100) / Number(zoomSlider.max || 300)) * 100;
+    const initialPct = (Number(zoomSlider.value || 0) / Number(zoomSlider.max || 300)) * 100;
     zoomSlider.style.setProperty("--zoom-fill", `${initialPct}%`);
   }
   zoomSlider?.addEventListener("input", () => {
@@ -729,6 +740,6 @@ export function createCompareView(actions: ViewActions): CompareViewController {
     return false;
   };
 
-  $("compareZoom").textContent = "100%";
+  $("compareZoom").textContent = "Fit";
   return { open, close, handleKey };
 }

@@ -41,6 +41,7 @@ export type RunViewController = {
 export function createRunView(actions: ViewActions): RunViewController {
   let dockDismissed = false;
   let lastDockState = "";
+  let verifying = false;
 
   const percent = (): number =>
     state.run.total > 0 ? Math.min(100, (state.run.done / state.run.total) * 100) : 0;
@@ -115,11 +116,6 @@ export function createRunView(actions: ViewActions): RunViewController {
     $("runPaused").classList.toggle("hidden", !paused);
     $("runComplete").classList.toggle("hidden", !terminal);
 
-    if (paused) {
-      $("btnPause").classList.add("hidden");
-      $("btnCancel").classList.add("hidden");
-    }
-
     if (terminal) {
       const s = state.lastSummary;
       const text = s
@@ -158,7 +154,20 @@ export function createRunView(actions: ViewActions): RunViewController {
 
   const resultsHtml = (): string => {
     const s = state.lastSummary;
-    if (!s) return "";
+    if (!s) {
+      if (state.run.state === "failed" && state.lastJobError) {
+        return `<div class="run-results" data-tone="bad">
+          <div class="results-head">
+            <span class="health-icon" style="background:var(--status-danger-soft);color:var(--status-danger)">${icon("alert-octagon", 18)}</span>
+            <div><h2>Run failed</h2><p>${escapeHtml(state.lastJobError)}</p></div>
+          </div>
+          <div class="results-actions">
+            <button class="btn secondary sm" type="button" data-run-action="workspace">Back to workspace</button>
+          </div>
+        </div>`;
+      }
+      return "";
+    }
     const failed = s.failed > 0;
     const tone = state.run.state === "failed" || failed ? "bad" : "ok";
     const title =
@@ -246,13 +255,15 @@ export function createRunView(actions: ViewActions): RunViewController {
       void actions.undoManifest(state.lastManifestId, state.lastSummary ?? undefined);
     }
     if (action === "verify" && state.lastJobId) {
-      void verify();
+      void verify(button as HTMLButtonElement);
     }
   });
 
-  const verify = async (): Promise<void> => {
+  const verify = async (trigger?: HTMLButtonElement): Promise<void> => {
     const jobId = state.lastJobId;
-    if (!jobId) return;
+    if (!jobId || verifying) return;
+    verifying = true;
+    if (trigger) trigger.disabled = true;
     const host = $("verifyResult");
     host.innerHTML = `<p class="empty-note">Checking outputs…</p>`;
     try {
@@ -268,6 +279,9 @@ export function createRunView(actions: ViewActions): RunViewController {
       </div>`;
     } catch (error) {
       host.innerHTML = `<p class="inline-msg">${escapeHtml((error as Error).message)}</p>`;
+    } finally {
+      verifying = false;
+      if (trigger?.isConnected) trigger.disabled = false;
     }
   };
 

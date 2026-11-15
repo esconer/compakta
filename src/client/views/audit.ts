@@ -31,7 +31,6 @@ const base = (rel: string): string => rel.split(/[\\/]/).pop() ?? rel;
 
 export function createAuditView(actions: ViewActions): AuditViewController {
   let tab: AuditTab = "sync";
-  let busy: AuditTab | null = null;
   let lastFocus: HTMLElement | null = null;
   let auditController: AbortController | null = null;
   let syncData: SyncResponse | null = null;
@@ -93,21 +92,20 @@ export function createAuditView(actions: ViewActions): AuditViewController {
   };
 
   const runSync = async (): Promise<void> => {
-    if (busy) return;
-    busy = "sync";
+    const signal = nextSignal();
     $("syncBox").innerHTML = loading("Comparing input against output…");
     try {
       const data = await api<SyncResponse>("sync", {
         method: "POST",
         body: { policy: actions.policy() },
-        signal: nextSignal(),
+        signal,
       });
+      if (signal.aborted) return;
       renderSync(data);
     } catch (error) {
+      if (signal.aborted || (error as Error)?.name === "AbortError") return;
       $("syncBox").innerHTML = `<h4>Sync</h4>${errorBox((error as Error).message)}<div class="drawer-actions"><button class="btn ghost sm" type="button" data-audit-run="sync">Try again</button></div>`;
       $("syncMeta").textContent = "unavailable";
-    } finally {
-      busy = null;
     }
   };
 
@@ -143,20 +141,19 @@ export function createAuditView(actions: ViewActions): AuditViewController {
   };
 
   const runDuplicates = async (): Promise<void> => {
-    if (busy) return;
-    busy = "duplicates";
+    const signal = nextSignal();
     $("dupeBox").innerHTML = loading("Hashing files…");
     try {
       const data = await api<DuplicatesResponse>("duplicates", {
         method: "POST",
         body: { maxHash: 6000, policy: actions.policy() },
-        signal: nextSignal(),
+        signal,
       });
+      if (signal.aborted) return;
       renderDuplicates(data);
     } catch (error) {
+      if (signal.aborted || (error as Error)?.name === "AbortError") return;
       $("dupeBox").innerHTML = `<h4>Duplicates</h4>${errorBox((error as Error).message)}<div class="drawer-actions"><button class="btn ghost sm" type="button" data-audit-run="duplicates">Try again</button></div>`;
-    } finally {
-      busy = null;
     }
   };
 
@@ -179,20 +176,19 @@ export function createAuditView(actions: ViewActions): AuditViewController {
   };
 
   const runDates = async (): Promise<void> => {
-    if (busy) return;
-    busy = "dates";
+    const signal = nextSignal();
     $("datesBox").innerHTML = loading("Reading EXIF dates…");
     try {
       const data = await api<DatesResponse>("dates", {
         method: "POST",
         body: { policy: actions.policy() },
-        signal: nextSignal(),
+        signal,
       });
+      if (signal.aborted) return;
       renderDates(data);
     } catch (error) {
+      if (signal.aborted || (error as Error)?.name === "AbortError") return;
       $("datesBox").innerHTML = `<h4>Dates</h4>${errorBox((error as Error).message)}<div class="drawer-actions"><button class="btn ghost sm" type="button" data-audit-run="dates">Try again</button></div>`;
-    } finally {
-      busy = null;
     }
   };
 
@@ -212,7 +208,6 @@ export function createAuditView(actions: ViewActions): AuditViewController {
   const close = (): void => {
     auditController?.abort();
     auditController = null;
-    busy = null;
     drawer.classList.add("hidden");
     backdrop.classList.add("hidden");
     drawer.setAttribute("aria-hidden", "true");

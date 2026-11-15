@@ -2131,7 +2131,6 @@ var errorBox = (message) => `<p class="inline-msg">${escapeHtml(message)}</p>`;
 var base = (rel) => rel.split(/[\\/]/).pop() ?? rel;
 function createAuditView(actions) {
   let tab = "sync";
-  let busy = null;
   let lastFocus = null;
   let auditController = null;
   let syncData = null;
@@ -2188,22 +2187,22 @@ function createAuditView(actions) {
     </div>`;
   };
   const runSync = async () => {
-    if (busy)
-      return;
-    busy = "sync";
+    const signal = nextSignal();
     $("syncBox").innerHTML = loading("Comparing input against output…");
     try {
       const data = await api("sync", {
         method: "POST",
         body: { policy: actions.policy() },
-        signal: nextSignal()
+        signal
       });
+      if (signal.aborted)
+        return;
       renderSync(data);
     } catch (error) {
+      if (signal.aborted || error?.name === "AbortError")
+        return;
       $("syncBox").innerHTML = `<h4>Sync</h4>${errorBox(error.message)}<div class="drawer-actions"><button class="btn ghost sm" type="button" data-audit-run="sync">Try again</button></div>`;
       $("syncMeta").textContent = "unavailable";
-    } finally {
-      busy = null;
     }
   };
   const renderDuplicates = (data) => {
@@ -2234,21 +2233,21 @@ function createAuditView(actions) {
     </div>`;
   };
   const runDuplicates = async () => {
-    if (busy)
-      return;
-    busy = "duplicates";
+    const signal = nextSignal();
     $("dupeBox").innerHTML = loading("Hashing files…");
     try {
       const data = await api("duplicates", {
         method: "POST",
         body: { maxHash: 6000, policy: actions.policy() },
-        signal: nextSignal()
+        signal
       });
+      if (signal.aborted)
+        return;
       renderDuplicates(data);
     } catch (error) {
+      if (signal.aborted || error?.name === "AbortError")
+        return;
       $("dupeBox").innerHTML = `<h4>Duplicates</h4>${errorBox(error.message)}<div class="drawer-actions"><button class="btn ghost sm" type="button" data-audit-run="duplicates">Try again</button></div>`;
-    } finally {
-      busy = null;
     }
   };
   const renderDates = (data) => {
@@ -2269,21 +2268,21 @@ function createAuditView(actions) {
     </div>`;
   };
   const runDates = async () => {
-    if (busy)
-      return;
-    busy = "dates";
+    const signal = nextSignal();
     $("datesBox").innerHTML = loading("Reading EXIF dates…");
     try {
       const data = await api("dates", {
         method: "POST",
         body: { policy: actions.policy() },
-        signal: nextSignal()
+        signal
       });
+      if (signal.aborted)
+        return;
       renderDates(data);
     } catch (error) {
+      if (signal.aborted || error?.name === "AbortError")
+        return;
       $("datesBox").innerHTML = `<h4>Dates</h4>${errorBox(error.message)}<div class="drawer-actions"><button class="btn ghost sm" type="button" data-audit-run="dates">Try again</button></div>`;
-    } finally {
-      busy = null;
     }
   };
   const open = (next = "sync") => {
@@ -2298,7 +2297,6 @@ function createAuditView(actions) {
   const close = () => {
     auditController?.abort();
     auditController = null;
-    busy = null;
     drawer.classList.add("hidden");
     backdrop.classList.add("hidden");
     drawer.setAttribute("aria-hidden", "true");
@@ -2403,9 +2401,9 @@ function createAuditView(actions) {
 
 // src/client/views/shared.ts
 var emptyState = (iconName, title, note) => `<div class="empty-state">
-     <svg width="24" height="24" aria-hidden="true"><use href="#i-${iconName}"></use></svg>
-     <p class="empty-title">${title}</p>
-     <p class="empty-note">${note}</p>
+     <svg width="24" height="24" aria-hidden="true"><use href="#i-${escapeHtml(iconName)}"></use></svg>
+     <p class="empty-title">${escapeHtml(title)}</p>
+     <p class="empty-note">${escapeHtml(note)}</p>
    </div>`;
 var checkIcon = (status) => {
   if (status === "ok")
@@ -2880,10 +2878,11 @@ function createCompareView(actions) {
     const zoomSlider = document.getElementById("compareZoomSlider");
     if (zoomSlider) {
       const displayVal = Math.round(state.compareZoom * 100);
-      zoomSlider.value = String(displayVal || 100);
+      zoomSlider.value = String(displayVal);
       const pct = Number(zoomSlider.value) / Number(zoomSlider.max || 300) * 100;
       zoomSlider.style.setProperty("--zoom-fill", `${pct}%`);
     }
+    $("compareZoom").textContent = state.compareZoom > 0 ? `${Math.round(state.compareZoom * 100)}%` : "Fit";
     run(chosen, activeFormat);
   };
   const close = () => {
@@ -2909,7 +2908,18 @@ function createCompareView(actions) {
       slider.style.setProperty("--zoom-fill", `${pct}%`);
     }
     $("compareZoom").textContent = state.compareZoom > 0 ? `${Math.round(state.compareZoom * 100)}%` : "Fit";
-    renderStage();
+    const stage = $("compareStage");
+    const imgs = stage.querySelectorAll(".compare-pane img");
+    if (imgs.length) {
+      const transform = state.compareZoom > 0 ? `scale(${state.compareZoom})` : "";
+      imgs.forEach((img) => {
+        img.style.transform = transform;
+      });
+      document.getElementById("btnDockFit")?.classList.toggle("active", state.compareZoom === 0);
+      document.getElementById("btnDock100")?.classList.toggle("active", state.compareZoom === 1);
+    } else {
+      renderStage();
+    }
   };
   const zoomIn = () => setZoom(state.compareZoom === 0 ? 1 : Math.min(3, state.compareZoom + 0.25));
   const zoomOut = () => setZoom(state.compareZoom <= 0.25 ? 0 : Math.max(0, state.compareZoom - 0.25));
@@ -2926,7 +2936,7 @@ function createCompareView(actions) {
   });
   const zoomSlider = document.getElementById("compareZoomSlider");
   if (zoomSlider) {
-    const initialPct = Number(zoomSlider.value || 100) / Number(zoomSlider.max || 300) * 100;
+    const initialPct = Number(zoomSlider.value || 0) / Number(zoomSlider.max || 300) * 100;
     zoomSlider.style.setProperty("--zoom-fill", `${initialPct}%`);
   }
   zoomSlider?.addEventListener("input", () => {
@@ -3030,7 +3040,7 @@ function createCompareView(actions) {
     }
     return false;
   };
-  $("compareZoom").textContent = "100%";
+  $("compareZoom").textContent = "Fit";
   return { open, close, handleKey };
 }
 
@@ -3183,7 +3193,11 @@ function createHealthView(actions) {
     } else if (target.closest("[data-health-ffmpeg]")) {
       api("video/ffmpeg/install", { method: "POST", body: {} }).then(() => {
         actions.toast("FFmpeg installed successfully!", "success");
-        return refresh();
+        return api("video/status").then((vStatus) => {
+          state.videoStatus = vStatus;
+          document.getElementById("ffUpdate")?.classList.add("hidden");
+          return refresh();
+        });
       }).catch((err) => actions.toast(err.message, "danger"));
     }
   });
@@ -3228,6 +3242,7 @@ var statusIcon = (status) => {
 function createRunView(actions) {
   let dockDismissed = false;
   let lastDockState = "";
+  let verifying = false;
   const percent = () => state.run.total > 0 ? Math.min(100, state.run.done / state.run.total * 100) : 0;
   const countsHtml = () => {
     const r = state.run;
@@ -3277,10 +3292,6 @@ function createRunView(actions) {
     $("btnCancel").classList.toggle("hidden", !live);
     $("runPaused").classList.toggle("hidden", !paused);
     $("runComplete").classList.toggle("hidden", !terminal);
-    if (paused) {
-      $("btnPause").classList.add("hidden");
-      $("btnCancel").classList.add("hidden");
-    }
     if (terminal) {
       const s = state.lastSummary;
       const text = s ? `${s.converted.toLocaleString()} converted · ${s.copied.toLocaleString()} copied · ${fmt(s.bytes)}${s.failed ? ` · ${s.failed} failed` : ""}` : r.state === "failed" ? state.lastJobError ?? "The run failed." : "The run finished.";
@@ -3307,8 +3318,20 @@ function createRunView(actions) {
   };
   const resultsHtml = () => {
     const s = state.lastSummary;
-    if (!s)
+    if (!s) {
+      if (state.run.state === "failed" && state.lastJobError) {
+        return `<div class="run-results" data-tone="bad">
+          <div class="results-head">
+            <span class="health-icon" style="background:var(--status-danger-soft);color:var(--status-danger)">${icon("alert-octagon", 18)}</span>
+            <div><h2>Run failed</h2><p>${escapeHtml(state.lastJobError)}</p></div>
+          </div>
+          <div class="results-actions">
+            <button class="btn secondary sm" type="button" data-run-action="workspace">Back to workspace</button>
+          </div>
+        </div>`;
+      }
       return "";
+    }
     const failed = s.failed > 0;
     const tone = state.run.state === "failed" || failed ? "bad" : "ok";
     const title = state.run.state === "failed" ? "Run failed" : s.note === "cancelled" ? "Run cancelled" : "Run complete";
@@ -3377,13 +3400,16 @@ function createRunView(actions) {
       actions.undoManifest(state.lastManifestId, state.lastSummary ?? undefined);
     }
     if (action === "verify" && state.lastJobId) {
-      verify();
+      verify(button);
     }
   });
-  const verify = async () => {
+  const verify = async (trigger) => {
     const jobId = state.lastJobId;
-    if (!jobId)
+    if (!jobId || verifying)
       return;
+    verifying = true;
+    if (trigger)
+      trigger.disabled = true;
     const host = $("verifyResult");
     host.innerHTML = `<p class="empty-note">Checking outputs…</p>`;
     try {
@@ -3396,6 +3422,10 @@ function createRunView(actions) {
       </div>`;
     } catch (error) {
       host.innerHTML = `<p class="inline-msg">${escapeHtml(error.message)}</p>`;
+    } finally {
+      verifying = false;
+      if (trigger?.isConnected)
+        trigger.disabled = false;
     }
   };
   $("btnDockClose").addEventListener("click", () => {
@@ -3426,6 +3456,7 @@ function createRunView(actions) {
 // src/client/views/runs.ts
 function createRunsView(actions) {
   let busy = false;
+  let lastManifests = [];
   const row = (manifest) => {
     const spec = state.formatSpecs[manifest.outputFormat];
     const format = spec?.shortLabel ?? manifest.outputFormat;
@@ -3452,6 +3483,7 @@ function createRunsView(actions) {
     try {
       const data = await api("manifests");
       const manifests = data.manifests ?? [];
+      lastManifests = manifests;
       $("runsCount").textContent = `${manifests.length.toLocaleString()} recorded`;
       if (!manifests.length) {
         $("runsBody").innerHTML = emptyState("history", "No runs recorded yet", "Finish a conversion and its manifest will appear here for safe undo.");
@@ -3472,7 +3504,8 @@ function createRunsView(actions) {
     if (!button?.dataset.undoId)
       return;
     const id = button.dataset.undoId;
-    actions.undoManifest(id).then(refresh);
+    const summary = lastManifests.find((m) => m.id === id)?.summary;
+    actions.undoManifest(id, summary).then(refresh);
   });
   $("runsRefresh").addEventListener("click", () => void refresh());
   const open = () => {
