@@ -28,6 +28,7 @@ demo-images-out/
 demo-vids/
 demo-vids-*/
 demo-vids-out/
+project details/
 # Tests are kept local and are not part of the public repository.
 src/*.test.ts
 src/selftest.ts
