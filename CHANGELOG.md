@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.3.4 - 2026-11-16
+
+- High-Leverage Features & Quality-of-Life Upgrades:
+  - Direct Quality Compare: Added a "Compare" button directly in the Lightbox viewer to jump straight into visual quality comparison for any viewed image.
+  - Tree Selection Retention: Preserved existing folder exclusions and include overrides when re-scanning the same source folder.
+  - Detailed Failure Reporting & Filtering: Live run activity now displays the exact failure reason beneath problematic rows and adds a "Failed only" toggle plus a 1-click clipboard copy button.
+  - True Space Saved Telemetry: Manifests, live runs, and run history now compute and display input bytes vs. output bytes saved deltas (e.g. `Saved 1.72 GB · 82%`).
+  - 1-Click Budget Overrides: The plan over-budget warning card now offers a 1-click action to exclude the top suggested folder and re-plan instantly.
+  - Extension Footprints: Sidebar format toggle chips now display scanned file counts and formatted byte totals on hover tooltips.
+  - OS Idle Sleep Inhibition: Prevents Windows and Linux systems from entering idle sleep during active conversions (`SetThreadExecutionState` on Windows, `systemd-inhibit` on Linux), automatically releasing locks on pause, completion, or cancellation.
+  - Compare View Enhancements: Added canvas drag-to-pan, smooth mouse-wheel zoom, double-click fit toggle, and keyboard arrow navigation (`←`, `→`) across selected files.
+  - GPU Hardware Encode Resilience: Added an automatic single-attempt fallback to CPU decoding when hardware GPU decoders reject non-standard chroma or container formats.
+  - Native Output Folder Navigation: Added bounded "Open folder" buttons to live run completion cards and the run history view to open destinations in native file managers.
+  - Recent Sources History: Added automatic tracking of the last 6 source folders with autocomplete datalist dropdown in the source path input.
+  - Background Progress Alerts: Window tab title now updates dynamically with conversion percentage (e.g. `42% · Compakta`) and sends a desktop notification on batch completion.
+  - Audit Drawer Inspections: Added collapsible full inspect lists for sync orphan files and undated files, with a 1-click "Exclude undated" action.
+
 ## 1.3.3 - 2026-11-16
 
 - Performance, Pipeline Integrity & Architecture Hardening:

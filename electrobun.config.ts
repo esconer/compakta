@@ -21,7 +21,7 @@ export default {
     identifier: isFull
       ? "com.github.esconer.compakta-full"
       : "com.github.esconer.compakta",
-    version: "1.3.3",
+    version: "1.3.4",
     description:
       "Local GUI for compressing and converting photos and videos.",
   },
