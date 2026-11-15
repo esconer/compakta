@@ -5,7 +5,7 @@
  * rebuilds lazily, keeps open folders and scroll position across redraws, and
  * never mutates the tree it was given.
  */
-import { $, escapeHtml, fmt, icon, input, type ToastKind } from "./dom";
+import { $, debounce, escapeHtml, fmt, icon, input, type ToastKind } from "./dom";
 import { state } from "./state";
 import * as treeLogic from "./tree-logic";
 import type { ScanResult, ScannedFile, TreeNode } from "./types";
@@ -43,6 +43,21 @@ export function createLibrary(opts: LibraryOptions): LibraryController {
   const filterInput = input("treeFilter");
   const clearFilter = $("btnClearFilter");
 
+  let flatCache: ScannedFile[] | null = null;
+  let photoCache: ScannedFile[] | null = null;
+  let videoCache: ScannedFile[] | null = null;
+
+  const invalidateFlatCache = (): void => {
+    flatCache = null;
+    photoCache = null;
+    videoCache = null;
+  };
+
+  const getScrollRoot = (): HTMLElement =>
+    (box.closest(".library-scroll") as HTMLElement | null) ??
+    (box.closest(".panel-scroll") as HTMLElement | null) ??
+    box;
+
   const pathOptions = () => ({
     sep: state.status?.pathSeparator ?? "\\",
     caseInsensitive: state.status?.caseInsensitive ?? true,
@@ -53,10 +68,19 @@ export function createLibrary(opts: LibraryOptions): LibraryController {
 
   const allFiles = (): ScannedFile[] => {
     if (!state.tree) return [];
-    const list = flatten(state.tree);
-    return state.mediaMode === "video"
-      ? list.filter((f) => f.category === "video")
-      : list.filter((f) => f.category === "image" || f.category === "raw");
+    if (!flatCache) {
+      flatCache = flatten(state.tree);
+    }
+    if (state.mediaMode === "video") {
+      if (!videoCache) {
+        videoCache = flatCache.filter((f) => f.category === "video");
+      }
+      return videoCache;
+    }
+    if (!photoCache) {
+      photoCache = flatCache.filter((f) => f.category === "image" || f.category === "raw");
+    }
+    return photoCache;
   };
 
   const selected = (): ScannedFile[] => {
@@ -83,10 +107,16 @@ export function createLibrary(opts: LibraryOptions): LibraryController {
     state.includedFiles = new Set([...state.includedFiles].filter((rel) => files.has(fold(rel))));
   };
 
+  const matchesActiveMode = (file: ScannedFile): boolean => {
+    return state.mediaMode === "video"
+      ? file.category === "video"
+      : file.category === "image" || file.category === "raw";
+  };
+
   const nodeMatches = (node: TreeNode, query: string): boolean => {
     if (!query) return true;
     if (node.rel.toLowerCase().includes(query)) return true;
-    if (node.files.some((file) => file.rel.toLowerCase().includes(query))) return true;
+    if (node.files.some((file) => matchesActiveMode(file) && file.rel.toLowerCase().includes(query))) return true;
     return node.children.some((child) => nodeMatches(child, query));
   };
 
@@ -442,7 +472,8 @@ export function createLibrary(opts: LibraryOptions): LibraryController {
 
   const render = (): void => {
     const focusedRel = document.activeElement?.closest<HTMLElement>("[data-rel]")?.dataset.rel ?? null;
-    const scrollTop = box.scrollTop;
+    const scrollRoot = getScrollRoot();
+    const scrollTop = scrollRoot.scrollTop;
     chunkObserver?.disconnect();
     box.innerHTML = "";
 
@@ -511,7 +542,7 @@ export function createLibrary(opts: LibraryOptions): LibraryController {
       $("treeFilterInfo").textContent = `${matches.toLocaleString()} matching file${matches === 1 ? "" : "s"}`;
     }
 
-    box.scrollTop = scrollTop;
+    scrollRoot.scrollTop = scrollTop;
     if (focusedRel) {
       box.querySelector<HTMLInputElement>(`[data-rel="${CSS.escape(focusedRel)}"] input`)?.focus();
     }
@@ -555,6 +586,7 @@ export function createLibrary(opts: LibraryOptions): LibraryController {
   };
 
   const setScan = (scan: ScanResult, reset: boolean): void => {
+    invalidateFlatCache();
     state.lastScan = scan;
     state.tree = scan.tree;
     if (reset) {
@@ -568,17 +600,21 @@ export function createLibrary(opts: LibraryOptions): LibraryController {
     opts.onChange();
   };
 
+  const debouncedRender = debounce(() => {
+    render();
+  }, 120);
+
   filterInput.addEventListener("input", () => {
     state.filterQuery = filterInput.value;
-    box.scrollTop = 0;
-    render();
+    getScrollRoot().scrollTop = 0;
+    debouncedRender();
   });
 
   filterInput.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;
     filterInput.value = "";
     state.filterQuery = "";
-    box.scrollTop = 0;
+    getScrollRoot().scrollTop = 0;
     render();
   });
 
@@ -622,9 +658,14 @@ export function createLibrary(opts: LibraryOptions): LibraryController {
     filterInput.select();
   };
 
+  const refresh = (): void => {
+    invalidateFlatCache();
+    render();
+  };
+
   return {
     setScan,
-    refresh: render,
+    refresh,
     selected,
     selectedBytes,
     focus,

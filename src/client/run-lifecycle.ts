@@ -23,6 +23,7 @@ export type RunLifecycleOptions = {
   save: () => Promise<void>;
   render: () => void;
   openRunView: () => void;
+  resetDock?: () => void;
   onFinished: () => Promise<void>;
   onError: (message: string) => void;
   onInfo: (message: string) => void;
@@ -137,9 +138,9 @@ export function createRunLifecycle(options: RunLifecycleOptions): RunLifecycle {
         state.run.startingRel = null;
         state.run.startingBytes = null;
       }
-      state.run.note = event.inFlight
+      state.run.note = event.message ?? (event.inFlight
         ? `Converting · ${event.inFlight} in flight`
-        : null;
+        : null);
     } else if (event.type === "paused") {
       state.run.state = "paused";
       state.running = true;
@@ -198,7 +199,9 @@ export function createRunLifecycle(options: RunLifecycleOptions): RunLifecycle {
       window.setTimeout(() => {
         void (async () => {
           try {
+            if (state.currentJob !== jobId) return;
             await api<JobSnapshot>(`job/state?id=${encodeURIComponent(jobId)}`);
+            if (state.currentJob !== jobId) return;
             await attach(jobId, true);
           } catch {
             state.running = false;
@@ -258,6 +261,7 @@ export function createRunLifecycle(options: RunLifecycleOptions): RunLifecycle {
     state.starting = true;
     state.run.id = jobId;
     state.run.state = "running";
+    options.resetDock?.();
     options.lockFormat(true);
     render();
     if (replay) {
@@ -314,6 +318,7 @@ export function createRunLifecycle(options: RunLifecycleOptions): RunLifecycle {
       state.lastJobId = response.jobId;
       state.lastManifestId = null;
       state.lastJobError = null;
+      options.resetDock?.();
       options.lockFormat(true);
       options.openRunView();
       render();

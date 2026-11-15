@@ -22,6 +22,7 @@ type ApiOptions = {
   method?: "GET" | "POST";
   body?: unknown;
   signal?: AbortSignal;
+  rawPath?: boolean;
 };
 
 const VIDEO_ROUTED_PATHS = new Set([
@@ -64,7 +65,8 @@ export function resolveApiRoute(path: string): string {
 
 export async function api<T>(path: string, opts: ApiOptions = {}): Promise<T> {
   const method = opts.method ?? "GET";
-  const res = await fetch("/api/" + resolveApiRoute(path), {
+  const target = opts.rawPath ? path : resolveApiRoute(path);
+  const res = await fetch("/api/" + target, {
     method,
     headers: method === "POST" ? { "content-type": "application/json" } : undefined,
     body: method === "POST" ? JSON.stringify(opts.body ?? {}) : undefined,

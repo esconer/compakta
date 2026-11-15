@@ -104,7 +104,7 @@ let healthView: HealthViewController;
 let auditView: AuditViewController;
 let lightbox: LightboxController;
 
-let previewTimer: ReturnType<typeof setTimeout> | null = null;
+let lastPhotoPolicy: Policy | null = null;
 let extEnabled: Record<string, boolean> = {};
 let scanning = false;
 let queuedNextMode: "image" | "video" | null = null;
@@ -217,10 +217,6 @@ const schedulePreview = debounce((): void => {
 }, 180);
 
 const refreshPreview = async (): Promise<void> => {
-  if (previewTimer) {
-    clearTimeout(previewTimer);
-    previewTimer = null;
-  }
   if (!state.tree) return;
 
   const seq = ++previewSeq;
@@ -473,6 +469,7 @@ const applySource = async (silent = false): Promise<void> => {
 
     await api<ConfigResponse>("config", {
       method: "POST",
+      rawPath: true,
       body: {
         sourceRoot: source,
         destination: input("destination").value.trim(),
@@ -669,7 +666,11 @@ const syncVideoDestUi = (): void => {
 };
 
 const switchMediaMode = async (next: "image" | "video"): Promise<void> => {
-  if (state.running || state.starting || state.mediaMode === next) return;  state.mediaMode = next;
+  if (state.running || state.starting || state.mediaMode === next) return;
+  if (state.mediaMode === "image") {
+    lastPhotoPolicy = policy();
+  }
+  state.mediaMode = next;
   const isVideo = next === "video";
 
   $("app").setAttribute("data-media-mode", next);
@@ -682,13 +683,30 @@ const switchMediaMode = async (next: "image" | "video"): Promise<void> => {
   $("videoDestModes").classList.toggle("hidden", !isVideo);
 
   if (isVideo) {
-    input("jobs").value = "1";
-    updateJobsReadout();
     const vStatus = await api<any>("video/status");
     state.videoStatus = vStatus;
-    state.videoDestMode = vStatus.policy.destMode ?? "merge";
+    const vPolicy = vStatus.policy;
+    state.videoDestMode = vPolicy.destMode ?? "merge";
     state.videoCustomDestination = vStatus.customDestination ?? "";
-    extEnabled = { ...vStatus.policy.extEnabled };
+    extEnabled = { ...vPolicy.extEnabled };
+
+    input("jobs").value = String(vPolicy.jobs ?? 1);
+    updateJobsReadout();
+    input("videoContainer").value = vPolicy.container ?? "mp4";
+    input("videoMaxRes").value = String(vPolicy.maxResolution ?? 0);
+    input("videoMaxFps").value = String(vPolicy.maxFps ?? 0);
+    input("videoAudioMode").value = vPolicy.audioMode ?? "copy";
+    input("videoTenBit").checked = Boolean(vPolicy.tenBit);
+    input("videoFilmGrain").value = String(vPolicy.filmGrain ?? 0);
+    input("videoSkipEfficient").checked = Boolean(vPolicy.skipAlreadyEfficient);
+    input("videoCustomParams").value = vPolicy.customParams ?? "";
+    input("minsize").value = String((vPolicy.minSizeBytes ?? 0) / 1024 ** 2);
+    input("copyUndersized").checked = Boolean(vPolicy.copyUndersized);
+    setUndersize(Boolean(vPolicy.copyUndersized));
+    updateMinSizeReadout();
+    updateFilmGrainReadout();
+    paintRanges();
+
     formatUi.init({
       ...(state.status as Status),
       formats: vStatus.formats,
@@ -696,8 +714,8 @@ const switchMediaMode = async (next: "image" | "video"): Promise<void> => {
       policy: {
         ...(state.status?.policy as Policy),
         outputFormat: vStatus.outputFormat,
-        qualities: [vStatus.policy.quality],
-        heicSpeed: vStatus.policy.speed,
+        qualities: [vPolicy.quality],
+        heicSpeed: vPolicy.speed,
       },
     });
     $("ffUpdate").classList.toggle("hidden", Boolean(vStatus.ffmpeg));
@@ -705,9 +723,23 @@ const switchMediaMode = async (next: "image" | "video"): Promise<void> => {
   } else {
     input("destination").readOnly = false;
     $<HTMLButtonElement>("btnPick").disabled = false;
+    const photoPol = lastPhotoPolicy ?? state.status?.policy;
     if (state.status) {
       input("destination").value = state.status.destination;
-      extEnabled = { ...state.status.policy.extEnabled };
+      if (photoPol) {
+        extEnabled = { ...photoPol.extEnabled };
+        input("minsize").value = String(photoPol.minSizeBytes / 1024 ** 2);
+        input("copyUndersized").checked = photoPol.copyUndersized;
+        input("includeRaw").checked = photoPol.includeRaw;
+        input("flattenGif").checked = photoPol.flattenGif;
+        input("heicSpeed").value = String(photoPol.heicSpeed);
+        input("photoMaxRes").value = String(photoPol.maxResolution ?? 0);
+        input("photoSkipLarger").checked = photoPol.skipAlreadyEfficient !== false;
+        input("photoStripMeta").checked = Boolean(photoPol.stripMetadata);
+        setUndersize(photoPol.copyUndersized);
+        updateMinSizeReadout();
+        paintRanges();
+      }
       formatUi.init(state.status);
     }
     $("ffUpdate").classList.add("hidden");
@@ -1638,15 +1670,17 @@ const boot = async (): Promise<void> => {
     paintRanges();
     updateStartOptions();
 
-    void (async () => {
-      try {
-        const vStatus = await api<any>("video/status");
-        state.videoStatus = vStatus;
-        if (!vStatus.ffmpeg) {
-          $("ffUpdate").classList.remove("hidden");
-        }
-      } catch {}
-    })();
+    try {
+      const vStatus = await api<any>("video/status");
+      state.videoStatus = vStatus;
+      if (!vStatus.ffmpeg) {
+        $("ffUpdate").classList.remove("hidden");
+      }
+      if (!status.liveJobId && vStatus.liveJobId) {
+        await switchMediaMode("video");
+        await runLifecycle.attach(vStatus.liveJobId, true);
+      }
+    } catch {}
 
     if (status.liveJobId) {
       await runLifecycle.attach(status.liveJobId, true);
@@ -1733,6 +1767,7 @@ runLifecycle = createRunLifecycle({
     updateChrome();
   },
   openRunView: () => runView.open(),
+  resetDock: () => runView.resetDock(),
   onFinished: async () => {
     runView.renderDock();
     if (state.view === "run") runView.renderView();

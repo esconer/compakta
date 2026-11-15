@@ -114,7 +114,8 @@ function resolveApiRoute(path) {
 }
 async function api(path, opts = {}) {
   const method = opts.method ?? "GET";
-  const res = await fetch("/api/" + resolveApiRoute(path), {
+  const target = opts.rawPath ? path : resolveApiRoute(path);
+  const res = await fetch("/api/" + target, {
     method,
     headers: method === "POST" ? { "content-type": "application/json" } : undefined,
     body: method === "POST" ? JSON.stringify(opts.body ?? {}) : undefined,
@@ -318,7 +319,7 @@ function createFormatUi(options) {
     const support = magick.formats?.[id];
     if (support)
       return Boolean(support.writable);
-    return id === "avif" ? Boolean(magick.avifWritable) : true;
+    return id === "avif" ? Boolean(magick.avifWritable) : false;
   };
   const qualityText = (spec, quality) => {
     if (spec.quality.kind === "crf-inverted") {
@@ -424,7 +425,8 @@ function createFormatUi(options) {
     if (!chosen)
       return;
     if (chosen !== preferred) {
-      options.onToast(`${state.formatSpecs[preferred]?.label ?? preferred} is not supported by this ImageMagick build; using ${state.formatSpecs[chosen].label}.`);
+      const engine = state.mediaMode === "video" ? "FFmpeg" : "ImageMagick";
+      options.onToast(`${state.formatSpecs[preferred]?.label ?? preferred} is not supported by this ${engine} build; using ${state.formatSpecs[chosen].label}.`);
     }
     if (state.formatSpecs[chosen]) {
       state.formatMemory[chosen] = {
@@ -652,6 +654,15 @@ function createLibrary(opts) {
   const box = $("tree");
   const filterInput = input("treeFilter");
   const clearFilter = $("btnClearFilter");
+  let flatCache = null;
+  let photoCache = null;
+  let videoCache = null;
+  const invalidateFlatCache = () => {
+    flatCache = null;
+    photoCache = null;
+    videoCache = null;
+  };
+  const getScrollRoot = () => box.closest(".library-scroll") ?? box.closest(".panel-scroll") ?? box;
   const pathOptions = () => ({
     sep: state.status?.pathSeparator ?? "\\",
     caseInsensitive: state.status?.caseInsensitive ?? true
@@ -660,8 +671,19 @@ function createLibrary(opts) {
   const allFiles = () => {
     if (!state.tree)
       return [];
-    const list = flatten(state.tree);
-    return state.mediaMode === "video" ? list.filter((f) => f.category === "video") : list.filter((f) => f.category === "image" || f.category === "raw");
+    if (!flatCache) {
+      flatCache = flatten(state.tree);
+    }
+    if (state.mediaMode === "video") {
+      if (!videoCache) {
+        videoCache = flatCache.filter((f) => f.category === "video");
+      }
+      return videoCache;
+    }
+    if (!photoCache) {
+      photoCache = flatCache.filter((f) => f.category === "image" || f.category === "raw");
+    }
+    return photoCache;
   };
   const selected = () => {
     if (!state.tree)
@@ -685,12 +707,15 @@ function createLibrary(opts) {
     state.excludedFiles = new Set([...state.excludedFiles].filter((rel) => files.has(fold(rel))));
     state.includedFiles = new Set([...state.includedFiles].filter((rel) => files.has(fold(rel))));
   };
+  const matchesActiveMode = (file) => {
+    return state.mediaMode === "video" ? file.category === "video" : file.category === "image" || file.category === "raw";
+  };
   const nodeMatches = (node, query) => {
     if (!query)
       return true;
     if (node.rel.toLowerCase().includes(query))
       return true;
-    if (node.files.some((file) => file.rel.toLowerCase().includes(query)))
+    if (node.files.some((file) => matchesActiveMode(file) && file.rel.toLowerCase().includes(query)))
       return true;
     return node.children.some((child) => nodeMatches(child, query));
   };
@@ -975,7 +1000,8 @@ function createLibrary(opts) {
   };
   const render = () => {
     const focusedRel = document.activeElement?.closest("[data-rel]")?.dataset.rel ?? null;
-    const scrollTop = box.scrollTop;
+    const scrollRoot = getScrollRoot();
+    const scrollTop = scrollRoot.scrollTop;
     chunkObserver?.disconnect();
     box.innerHTML = "";
     if (!state.tree) {
@@ -1025,7 +1051,7 @@ function createLibrary(opts) {
       $("treeFilterInfo").classList.remove("hidden");
       $("treeFilterInfo").textContent = `${matches.toLocaleString()} matching file${matches === 1 ? "" : "s"}`;
     }
-    box.scrollTop = scrollTop;
+    scrollRoot.scrollTop = scrollTop;
     if (focusedRel) {
       box.querySelector(`[data-rel="${CSS.escape(focusedRel)}"] input`)?.focus();
     }
@@ -1065,6 +1091,7 @@ function createLibrary(opts) {
     state.includedFiles = new Set;
   };
   const setScan = (scan, reset) => {
+    invalidateFlatCache();
     state.lastScan = scan;
     state.tree = scan.tree;
     if (reset) {
@@ -1077,17 +1104,20 @@ function createLibrary(opts) {
     render();
     opts.onChange();
   };
+  const debouncedRender = debounce(() => {
+    render();
+  }, 120);
   filterInput.addEventListener("input", () => {
     state.filterQuery = filterInput.value;
-    box.scrollTop = 0;
-    render();
+    getScrollRoot().scrollTop = 0;
+    debouncedRender();
   });
   filterInput.addEventListener("keydown", (event) => {
     if (event.key !== "Escape")
       return;
     filterInput.value = "";
     state.filterQuery = "";
-    box.scrollTop = 0;
+    getScrollRoot().scrollTop = 0;
     render();
   });
   clearFilter.addEventListener("click", () => {
@@ -1127,9 +1157,13 @@ function createLibrary(opts) {
     filterInput.focus();
     filterInput.select();
   };
+  const refresh = () => {
+    invalidateFlatCache();
+    render();
+  };
   return {
     setScan,
-    refresh: render,
+    refresh,
     selected,
     selectedBytes,
     focus,
@@ -1151,10 +1185,13 @@ function createLightbox(getFiles) {
   const spinnerEl = $("lightboxSpinner");
   let currentFiles = [];
   let currentIndex = -1;
+  let activeRel = "";
+  let previouslyFocused = null;
   const update = () => {
     if (currentIndex < 0 || currentIndex >= currentFiles.length)
       return;
     const file = currentFiles[currentIndex];
+    activeRel = file.rel;
     titleEl.textContent = file.name;
     counterEl.textContent = `${currentIndex + 1} of ${currentFiles.length}`;
     infoEl.textContent = `${fmt(file.size)} · ${file.ext.toUpperCase()}`;
@@ -1167,10 +1204,14 @@ function createLightbox(getFiles) {
     imgEl.alt = file.name;
   };
   imgEl.addEventListener("load", () => {
+    if (activeRel !== (currentFiles[currentIndex]?.rel ?? ""))
+      return;
     spinnerEl.classList.add("hidden");
     imgEl.classList.remove("loading");
   });
   imgEl.addEventListener("error", () => {
+    if (activeRel !== (currentFiles[currentIndex]?.rel ?? ""))
+      return;
     spinnerEl.classList.add("hidden");
     imgEl.classList.remove("loading");
   });
@@ -1190,16 +1231,25 @@ function createLightbox(getFiles) {
     overlay.classList.add("hidden");
     imgEl.src = "";
     currentIndex = -1;
+    activeRel = "";
+    if (previouslyFocused && typeof previouslyFocused.focus === "function") {
+      try {
+        previouslyFocused.focus();
+      } catch {}
+      previouslyFocused = null;
+    }
   };
   const open = (rel, filesProvider) => {
     const list = filesProvider ? filesProvider() : getFiles();
     currentFiles = list;
     if (currentFiles.length === 0)
       return;
+    previouslyFocused = document.activeElement;
     const idx = currentFiles.findIndex((f) => f.rel === rel);
     currentIndex = idx >= 0 ? idx : 0;
     overlay.classList.remove("hidden");
     update();
+    closeBtn.focus();
   };
   closeBtn.addEventListener("click", close);
   nextBtn.addEventListener("click", (e) => {
@@ -1402,7 +1452,10 @@ function createPlan(opts) {
       delta.textContent = saved == null ? "" : `${saved >= 0 ? "−" : "+"}${Math.abs(saved).toFixed(0)}%`;
       delta.dataset.tone = saved != null && saved >= 0 ? "good" : "bad";
     }
-    $("planHeroSub").textContent = `${p.formatLabel} q${spec ? Math.round(Number($("quality").value)) : "—"} · ${p.estOutputFiles.toLocaleString()} output files`;
+    const qVal = spec ? Math.round(Number($("quality").value)) : null;
+    const qLabel = qVal != null ? spec?.quality.kind === "compression" ? `level ${Math.floor(qVal / 10)}` : `q${qVal}` : "—";
+    const mediaWord = state.mediaMode === "video" ? "video" : "photo";
+    $("planHeroSub").textContent = `${p.formatLabel} ${qLabel} · ${p.estOutputFiles.toLocaleString()} ${mediaWord}${p.estOutputFiles === 1 ? "" : "s"}`;
     $("statConvert").textContent = p.convert.toLocaleString();
     $("statCopy").textContent = p.copy.toLocaleString();
     $("statSkip").textContent = p.skip.toLocaleString();
@@ -1449,7 +1502,8 @@ function createPlan(opts) {
     $("startHint").textContent = state.running ? "Progress is in the floating run dock." : total === 0 ? "Include at least one file in the Library." : `${projection}${time} · undo available after the run`;
     const btnBoth = document.getElementById("btnStartBoth");
     if (btnBoth) {
-      const showBoth = !state.running && !state.starting && total > 0 && otherCount > 0 && canRun;
+      const otherToolReady = state.mediaMode === "video" ? Boolean(state.status?.magick) : Boolean(state.videoStatus?.ffmpeg);
+      const showBoth = !state.running && !state.starting && total > 0 && otherCount > 0 && canRun && otherToolReady;
       btnBoth.classList.toggle("hidden", !showBoth);
       btnBoth.disabled = !showBoth;
       btnBoth.textContent = `Convert All (${total.toLocaleString()} ${state.mediaMode === "video" ? "videos" : "photos"} + ${otherCount.toLocaleString()} ${state.mediaMode === "video" ? "photos" : "videos"})`;
@@ -1580,7 +1634,7 @@ function createRunLifecycle(options) {
         state.run.startingRel = null;
         state.run.startingBytes = null;
       }
-      state.run.note = event.inFlight ? `Converting · ${event.inFlight} in flight` : null;
+      state.run.note = event.message ?? (event.inFlight ? `Converting · ${event.inFlight} in flight` : null);
     } else if (event.type === "paused") {
       state.run.state = "paused";
       state.running = true;
@@ -1635,7 +1689,11 @@ function createRunLifecycle(options) {
       window.setTimeout(() => {
         (async () => {
           try {
+            if (state.currentJob !== jobId)
+              return;
             await api(`job/state?id=${encodeURIComponent(jobId)}`);
+            if (state.currentJob !== jobId)
+              return;
             await attach(jobId, true);
           } catch {
             state.running = false;
@@ -1691,6 +1749,7 @@ function createRunLifecycle(options) {
     state.starting = true;
     state.run.id = jobId;
     state.run.state = "running";
+    options.resetDock?.();
     options.lockFormat(true);
     render();
     if (replay) {
@@ -1745,6 +1804,7 @@ function createRunLifecycle(options) {
       state.lastJobId = response.jobId;
       state.lastManifestId = null;
       state.lastJobError = null;
+      options.resetDock?.();
       options.lockFormat(true);
       options.openRunView();
       render();
@@ -1857,7 +1917,8 @@ function initSplitPanes() {
     const saved = localStorage.getItem(STORAGE_KEY) || localStorage.getItem(LEGACY_STORAGE_KEY);
     if (saved) {
       const [r1, r2, r3] = JSON.parse(saved);
-      if (Number.isFinite(r1) && Number.isFinite(r2) && Number.isFinite(r3) && r1 > 0 && r2 > 0 && r3 > 0) {
+      const sum = r1 + r2 + r3;
+      if (Number.isFinite(r1) && Number.isFinite(r2) && Number.isFinite(r3) && sum > 0 && r1 / sum > 0.15 && r2 / sum > 0.15 && r3 / sum > 0.15) {
         applyRatios(r1, r2, r3, false);
       }
     }
@@ -1881,6 +1942,10 @@ function initSplitPanes() {
       const startW3 = p3.getBoundingClientRect().width;
       const totalW = startW1 + startW2 + startW3;
       if (totalW <= 0)
+        return;
+      if (which === "left" && startW1 + startW2 < MIN_PANE_PX * 2)
+        return;
+      if (which === "right" && startW2 + startW3 < MIN_PANE_PX * 2)
         return;
       resizer.classList.add("is-active");
       document.body.classList.add("is-resizing");
@@ -1930,6 +1995,10 @@ function initSplitPanes() {
         const startW3 = panes[2].getBoundingClientRect().width;
         const totalW = startW1 + startW2 + startW3;
         if (totalW <= 0)
+          return;
+        if (which === "left" && startW1 + startW2 < MIN_PANE_PX * 2)
+          return;
+        if (which === "right" && startW2 + startW3 < MIN_PANE_PX * 2)
           return;
         const dx = e.key === "ArrowRight" ? step : -step;
         let w1 = startW1;
@@ -3428,7 +3497,7 @@ var runsView;
 var healthView;
 var auditView;
 var lightbox;
-var previewTimer = null;
+var lastPhotoPolicy = null;
 var extEnabled = {};
 var scanning = false;
 var queuedNextMode = null;
@@ -3524,10 +3593,6 @@ var schedulePreview = debounce(() => {
   refreshPreview();
 }, 180);
 var refreshPreview = async () => {
-  if (previewTimer) {
-    clearTimeout(previewTimer);
-    previewTimer = null;
-  }
   if (!state.tree)
     return;
   const seq = ++previewSeq;
@@ -3715,6 +3780,7 @@ var applySource = async (silent = false) => {
       throw new Error("That path is a file, not a folder.");
     await api("config", {
       method: "POST",
+      rawPath: true,
       body: {
         sourceRoot: source,
         destination: input("destination").value.trim(),
@@ -3885,6 +3951,9 @@ var syncVideoDestUi = () => {
 var switchMediaMode = async (next) => {
   if (state.running || state.starting || state.mediaMode === next)
     return;
+  if (state.mediaMode === "image") {
+    lastPhotoPolicy = policy();
+  }
   state.mediaMode = next;
   const isVideo = next === "video";
   $("app").setAttribute("data-media-mode", next);
@@ -3895,13 +3964,28 @@ var switchMediaMode = async (next) => {
   $("videoTinkerOpts").classList.toggle("hidden", !isVideo);
   $("videoDestModes").classList.toggle("hidden", !isVideo);
   if (isVideo) {
-    input("jobs").value = "1";
-    updateJobsReadout();
     const vStatus = await api("video/status");
     state.videoStatus = vStatus;
-    state.videoDestMode = vStatus.policy.destMode ?? "merge";
+    const vPolicy = vStatus.policy;
+    state.videoDestMode = vPolicy.destMode ?? "merge";
     state.videoCustomDestination = vStatus.customDestination ?? "";
-    extEnabled = { ...vStatus.policy.extEnabled };
+    extEnabled = { ...vPolicy.extEnabled };
+    input("jobs").value = String(vPolicy.jobs ?? 1);
+    updateJobsReadout();
+    input("videoContainer").value = vPolicy.container ?? "mp4";
+    input("videoMaxRes").value = String(vPolicy.maxResolution ?? 0);
+    input("videoMaxFps").value = String(vPolicy.maxFps ?? 0);
+    input("videoAudioMode").value = vPolicy.audioMode ?? "copy";
+    input("videoTenBit").checked = Boolean(vPolicy.tenBit);
+    input("videoFilmGrain").value = String(vPolicy.filmGrain ?? 0);
+    input("videoSkipEfficient").checked = Boolean(vPolicy.skipAlreadyEfficient);
+    input("videoCustomParams").value = vPolicy.customParams ?? "";
+    input("minsize").value = String((vPolicy.minSizeBytes ?? 0) / 1024 ** 2);
+    input("copyUndersized").checked = Boolean(vPolicy.copyUndersized);
+    setUndersize(Boolean(vPolicy.copyUndersized));
+    updateMinSizeReadout();
+    updateFilmGrainReadout();
+    paintRanges();
     formatUi.init({
       ...state.status,
       formats: vStatus.formats,
@@ -3909,8 +3993,8 @@ var switchMediaMode = async (next) => {
       policy: {
         ...state.status?.policy,
         outputFormat: vStatus.outputFormat,
-        qualities: [vStatus.policy.quality],
-        heicSpeed: vStatus.policy.speed
+        qualities: [vPolicy.quality],
+        heicSpeed: vPolicy.speed
       }
     });
     $("ffUpdate").classList.toggle("hidden", Boolean(vStatus.ffmpeg));
@@ -3918,9 +4002,23 @@ var switchMediaMode = async (next) => {
   } else {
     input("destination").readOnly = false;
     $("btnPick").disabled = false;
+    const photoPol = lastPhotoPolicy ?? state.status?.policy;
     if (state.status) {
       input("destination").value = state.status.destination;
-      extEnabled = { ...state.status.policy.extEnabled };
+      if (photoPol) {
+        extEnabled = { ...photoPol.extEnabled };
+        input("minsize").value = String(photoPol.minSizeBytes / 1024 ** 2);
+        input("copyUndersized").checked = photoPol.copyUndersized;
+        input("includeRaw").checked = photoPol.includeRaw;
+        input("flattenGif").checked = photoPol.flattenGif;
+        input("heicSpeed").value = String(photoPol.heicSpeed);
+        input("photoMaxRes").value = String(photoPol.maxResolution ?? 0);
+        input("photoSkipLarger").checked = photoPol.skipAlreadyEfficient !== false;
+        input("photoStripMeta").checked = Boolean(photoPol.stripMetadata);
+        setUndersize(photoPol.copyUndersized);
+        updateMinSizeReadout();
+        paintRanges();
+      }
       formatUi.init(state.status);
     }
     $("ffUpdate").classList.add("hidden");
@@ -4645,15 +4743,17 @@ var boot = async () => {
     updateFilmGrainReadout();
     paintRanges();
     updateStartOptions();
-    (async () => {
-      try {
-        const vStatus = await api("video/status");
-        state.videoStatus = vStatus;
-        if (!vStatus.ffmpeg) {
-          $("ffUpdate").classList.remove("hidden");
-        }
-      } catch {}
-    })();
+    try {
+      const vStatus = await api("video/status");
+      state.videoStatus = vStatus;
+      if (!vStatus.ffmpeg) {
+        $("ffUpdate").classList.remove("hidden");
+      }
+      if (!status.liveJobId && vStatus.liveJobId) {
+        await switchMediaMode("video");
+        await runLifecycle.attach(vStatus.liveJobId, true);
+      }
+    } catch {}
     if (status.liveJobId) {
       await runLifecycle.attach(status.liveJobId, true);
     }
@@ -4727,6 +4827,7 @@ runLifecycle = createRunLifecycle({
     updateChrome();
   },
   openRunView: () => runView.open(),
+  resetDock: () => runView.resetDock(),
   onFinished: async () => {
     runView.renderDock();
     if (state.view === "run")

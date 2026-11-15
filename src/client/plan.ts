@@ -213,7 +213,10 @@ export function createPlan(opts: PlanOptions): PlanController {
         : `${saved >= 0 ? "−" : "+"}${Math.abs(saved).toFixed(0)}%`;
       delta.dataset.tone = saved != null && saved >= 0 ? "good" : "bad";
     }
-    $("planHeroSub").textContent = `${p.formatLabel} q${spec ? Math.round(Number($<HTMLInputElement>("quality").value)) : "—"} · ${p.estOutputFiles.toLocaleString()} output files`;
+    const qVal = spec ? Math.round(Number($<HTMLInputElement>("quality").value)) : null;
+    const qLabel = qVal != null ? (spec?.quality.kind === "compression" ? `level ${Math.floor(qVal / 10)}` : `q${qVal}`) : "—";
+    const mediaWord = state.mediaMode === "video" ? "video" : "photo";
+    $("planHeroSub").textContent = `${p.formatLabel} ${qLabel} · ${p.estOutputFiles.toLocaleString()} ${mediaWord}${p.estOutputFiles === 1 ? "" : "s"}`;
 
     $("statConvert").textContent = p.convert.toLocaleString();
     $("statCopy").textContent = p.copy.toLocaleString();
@@ -280,7 +283,10 @@ export function createPlan(opts: PlanOptions): PlanController {
 
     const btnBoth = document.getElementById("btnStartBoth") as HTMLButtonElement | null;
     if (btnBoth) {
-      const showBoth = !state.running && !state.starting && total > 0 && otherCount > 0 && canRun;
+      const otherToolReady = state.mediaMode === "video"
+        ? Boolean(state.status?.magick)
+        : Boolean(state.videoStatus?.ffmpeg);
+      const showBoth = !state.running && !state.starting && total > 0 && otherCount > 0 && canRun && otherToolReady;
       btnBoth.classList.toggle("hidden", !showBoth);
       btnBoth.disabled = !showBoth;
       btnBoth.textContent = `Convert All (${total.toLocaleString()} ${state.mediaMode === "video" ? "videos" : "photos"} + ${otherCount.toLocaleString()} ${state.mediaMode === "video" ? "photos" : "videos"})`;

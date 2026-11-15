@@ -27,10 +27,13 @@ export function createLightbox(getFiles: () => ScannedFile[]): LightboxControlle
 
   let currentFiles: ScannedFile[] = [];
   let currentIndex = -1;
+  let activeRel = "";
+  let previouslyFocused: HTMLElement | null = null;
 
   const update = (): void => {
     if (currentIndex < 0 || currentIndex >= currentFiles.length) return;
     const file = currentFiles[currentIndex];
+    activeRel = file.rel;
 
     titleEl.textContent = file.name;
     counterEl.textContent = `${currentIndex + 1} of ${currentFiles.length}`;
@@ -48,11 +51,13 @@ export function createLightbox(getFiles: () => ScannedFile[]): LightboxControlle
   };
 
   imgEl.addEventListener("load", () => {
+    if (activeRel !== (currentFiles[currentIndex]?.rel ?? "")) return;
     spinnerEl.classList.add("hidden");
     imgEl.classList.remove("loading");
   });
 
   imgEl.addEventListener("error", () => {
+    if (activeRel !== (currentFiles[currentIndex]?.rel ?? "")) return;
     spinnerEl.classList.add("hidden");
     imgEl.classList.remove("loading");
   });
@@ -73,16 +78,25 @@ export function createLightbox(getFiles: () => ScannedFile[]): LightboxControlle
     overlay.classList.add("hidden");
     imgEl.src = "";
     currentIndex = -1;
+    activeRel = "";
+    if (previouslyFocused && typeof previouslyFocused.focus === "function") {
+      try {
+        previouslyFocused.focus();
+      } catch {}
+      previouslyFocused = null;
+    }
   };
 
   const open = (rel: string, filesProvider?: () => ScannedFile[]): void => {
     const list = filesProvider ? filesProvider() : getFiles();
     currentFiles = list;
     if (currentFiles.length === 0) return;
+    previouslyFocused = document.activeElement as HTMLElement | null;
     const idx = currentFiles.findIndex((f) => f.rel === rel);
     currentIndex = idx >= 0 ? idx : 0;
     overlay.classList.remove("hidden");
     update();
+    closeBtn.focus();
   };
 
   closeBtn.addEventListener("click", close);

@@ -54,13 +54,15 @@ export function initSplitPanes(): void {
     const saved = localStorage.getItem(STORAGE_KEY) || localStorage.getItem(LEGACY_STORAGE_KEY);
     if (saved) {
       const [r1, r2, r3] = JSON.parse(saved) as [number, number, number];
+      const sum = r1 + r2 + r3;
       if (
         Number.isFinite(r1) &&
         Number.isFinite(r2) &&
         Number.isFinite(r3) &&
-        r1 > 0 &&
-        r2 > 0 &&
-        r3 > 0
+        sum > 0 &&
+        r1 / sum > 0.15 &&
+        r2 / sum > 0.15 &&
+        r3 / sum > 0.15
       ) {
         applyRatios(r1, r2, r3, false);
       }
@@ -92,6 +94,8 @@ export function initSplitPanes(): void {
       const startW3 = p3.getBoundingClientRect().width;
       const totalW = startW1 + startW2 + startW3;
       if (totalW <= 0) return;
+      if (which === "left" && startW1 + startW2 < MIN_PANE_PX * 2) return;
+      if (which === "right" && startW2 + startW3 < MIN_PANE_PX * 2) return;
 
       resizer.classList.add("is-active");
       document.body.classList.add("is-resizing");
@@ -149,6 +153,8 @@ export function initSplitPanes(): void {
         const startW3 = panes[2].getBoundingClientRect().width;
         const totalW = startW1 + startW2 + startW3;
         if (totalW <= 0) return;
+        if (which === "left" && startW1 + startW2 < MIN_PANE_PX * 2) return;
+        if (which === "right" && startW2 + startW3 < MIN_PANE_PX * 2) return;
         const dx = e.key === "ArrowRight" ? step : -step;
 
         let w1 = startW1;

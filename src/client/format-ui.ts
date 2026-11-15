@@ -48,7 +48,7 @@ export function createFormatUi(options: FormatUiOptions): FormatUi {
     if (!magick) return false;
     const support = magick.formats?.[id];
     if (support) return Boolean(support.writable);
-    return id === "avif" ? Boolean(magick.avifWritable) : true;
+    return id === "avif" ? Boolean(magick.avifWritable) : false;
   };
 
   const qualityText = (spec: FormatSpec, quality: number): string => {
@@ -170,7 +170,8 @@ export function createFormatUi(options: FormatUiOptions): FormatUi {
     const chosen = preferredSpec && writable(preferred) ? preferred : fallback;
     if (!chosen) return;
     if (chosen !== preferred) {
-      options.onToast(`${state.formatSpecs[preferred]?.label ?? preferred} is not supported by this ImageMagick build; using ${state.formatSpecs[chosen].label}.`);
+      const engine = state.mediaMode === "video" ? "FFmpeg" : "ImageMagick";
+      options.onToast(`${state.formatSpecs[preferred]?.label ?? preferred} is not supported by this ${engine} build; using ${state.formatSpecs[chosen].label}.`);
     }
     if (state.formatSpecs[chosen]) {
       state.formatMemory[chosen] = {

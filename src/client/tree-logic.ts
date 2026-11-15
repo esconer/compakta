@@ -75,15 +75,6 @@ const pathOptions = (opts?: PathOptions): ResolvedPathOptions => ({
 const fold = (s: string, caseInsensitive: boolean): string =>
   caseInsensitive ? s.toLowerCase() : s;
 
-/** Does `prefix` cover `rel`, matching only on a path boundary? */
-/**
- * @param {string} prefix
- * @param {string} rel
- * @param {string} dir
- */
-function covers(prefix: string, rel: string, dir: string): boolean {
-  return dir === prefix || dir.startsWith(prefix + "/") || rel.startsWith(prefix + "/");
-}
 
 /**
  * True when this folder, or any ancestor of it, is excluded.
