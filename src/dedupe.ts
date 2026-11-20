@@ -28,6 +28,12 @@ export type DedupeResult = {
   duplicateBytes: number;
   hashedFiles: number;
   hashedBytes: number;
+  /** Candidates that could not be read (deleted since scan, locked, corrupt,
+   * permission). Silent drops would make "no duplicates" look complete. */
+  hashErrors: number;
+  /** Same-size candidate groups with at least one file that failed hashing —
+   * these could hide undetected duplicates, so they are reported, not dropped. */
+  unhashedGroups: number;
   durationMs: number;
   truncated: boolean;
   candidateCount: number;
@@ -91,6 +97,10 @@ export async function findDuplicates(
 
   const CONC = 8;
   const partialGroups = new Map<string, ScannedFile[]>();
+  let hashErrors = 0;
+  // D-2: track exactly which candidates failed hashing so we can derive a real
+  // count of unverified same-size groups instead of fabricating a number.
+  const failedHashAbs = new Set<string>();
   let cursor = 0;
 
   // Stage 1: Fast partial fingerprint (or full hash if <= 256 KB)
@@ -106,6 +116,13 @@ export async function findDuplicates(
           if (arr) arr.push(f);
           else partialGroups.set(key, [f]);
         } catch {
+          // A read failure is a real error unless the user aborted mid-hash -
+          // abort tears (ENOENT/EBADF from a killed read) are not user-visible
+          // problems and must not be counted.
+          if (!opts.signal?.aborted) {
+            hashErrors++;
+            failedHashAbs.add(f.abs);
+          }
           continue;
         }
       }
@@ -146,6 +163,10 @@ export async function findDuplicates(
           else hashes.set(hash, [f]);
           opts.onProgress?.(hashedFiles, needFullHash.length);
         } catch {
+          if (!opts.signal?.aborted) {
+            hashErrors++;
+            failedHashAbs.add(f.abs);
+          }
           continue;
         }
       }
@@ -178,12 +199,30 @@ export async function findDuplicates(
 
   groups.sort((a, b) => b.size * (b.members.length - 1) - a.size * (a.members.length - 1));
 
+  // D-2: a same-size candidate bucket that lost a file to a hash error is not
+  // a trustworthy "no duplicates here" result — it may hide a duplicate pair.
+  // Count those buckets from the recorded failures (never fabricate a value).
+  let unhashedGroups = 0;
+  if (failedHashAbs.size > 0) {
+    const bySize = new Map<number, ScannedFile[]>();
+    for (const f of allCands) {
+      const arr = bySize.get(f.size);
+      if (arr) arr.push(f);
+      else bySize.set(f.size, [f]);
+    }
+    for (const members of bySize.values()) {
+      if (members.some((m) => failedHashAbs.has(m.abs))) unhashedGroups++;
+    }
+  }
+
   return {
     groups,
     duplicateFiles,
     duplicateBytes,
     hashedFiles,
     hashedBytes,
+    hashErrors,
+    unhashedGroups,
     durationMs: Date.now() - started,
     truncated,
     candidateCount: allCands.length,
