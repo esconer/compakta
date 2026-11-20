@@ -84,11 +84,6 @@ export function parseFormatSupport(text: string): Record<OutputFormat, FormatSup
   return out;
 }
 
-/** Directories that hold no convertible payload - never worth showing as a cost. */
-export const JUNK_EXTS = [
-  "pcv", "tmp", "appimage", "exe", "url", "lnk", "ini", "db", "sqlite", "thumbs", "db-wal",
-] as const;
-
 /** Where the app keeps (or downloads) its own portable ImageMagick. */
 export const LOCAL_MAGICK_ROOT = MAGICK_DIR;
 
@@ -251,7 +246,15 @@ function candidateMagickPaths(): string[] {
     // 3. Whatever is on PATH.
     out.push(MAGICK_BIN);
   } else {
-    // Unsupported platform: PATH is the only sensible guess.
+    // macOS: Homebrew (Apple Silicon / Intel) and MacPorts install locations,
+    // then whatever is on PATH.
+    for (const dir of [
+      "/opt/homebrew/bin",
+      "/usr/local/bin",
+      "/opt/local/bin",
+    ]) {
+      out.push(path.join(dir, MAGICK_BIN));
+    }
     out.push(MAGICK_BIN);
     out.push("magick");
   }

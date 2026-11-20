@@ -144,7 +144,12 @@ export async function scanLibrary(
   const STAT_CONCURRENCY = 24;
 
   async function walk(dirAbs: string, node: TreeNode, depth: number): Promise<void> {
-    if (depth > maxDepth) return;
+    // Record the cut instead of dropping the folder silently: "my folder is
+    // missing" and "folder is beyond maxDepth" are different user problems.
+    if (depth > maxDepth) {
+      skipped.push({ path: dirAbs, reason: "max-depth cut" });
+      return;
+    }
 
     let entries;
     try {
@@ -167,7 +172,10 @@ export async function scanLibrary(
       }
 
       if (entry.isDirectory()) {
-        if (isIgnoredDir(name)) continue;
+        if (isIgnoredDir(name)) {
+          skipped.push({ path: childAbs, reason: `ignored-pattern: ${name}` });
+          continue;
+        }
         const relChild = path.relative(absRoot, childAbs);
         const child = blankNode(name, relChild, childAbs, depth + 1);
         node.children.push(child);
