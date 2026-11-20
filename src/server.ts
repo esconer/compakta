@@ -8,7 +8,6 @@ import { existsSync, readdirSync } from "node:fs";
 import { readdir, rename, rm, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 
 import { scanLibrary, type ScanResult, type ScannedFile } from "./scan.ts";
@@ -21,7 +20,7 @@ import {
   isOutputFormat, qualityDisplay, sourceArgFor, type OutputFormat,
 } from "./formats.ts";
 import {
-  findMagick, assertDestinationSafe, freeSpace, ensureDir, type MagickInfo,
+  findMagick, assertDestinationSafe, freeSpace, ensureDir, dirExists, type MagickInfo,
 } from "./paths.ts";
 import { estimateFromSample, type Estimate } from "./estimate.ts";
 import { findDuplicates, type DedupeResult } from "./dedupe.ts";
@@ -143,7 +142,13 @@ const videoBridge: SharedServerBridge = {
 };
 
 function requireMagick(): MagickInfo {
-  if (!state.magick) state.magick = findMagick();
+  if (!state.magick) {
+    try {
+      state.magick = findMagick();
+    } catch (err) {
+      throw new HttpError(400, singleLine((err as Error).message));
+    }
+  }
   return state.magick;
 }
 
@@ -686,13 +691,16 @@ async function handleApi(pathname: string, req: Request, url: URL): Promise<Resp
       state.dedupe = null;
       state.verify = null;
       state.dates = null;
+      state.sync = null;
+      state.lastPreview = null;
       state.lastEstimate = null;
       // Measured ratios describe the current source. Keep them on a re-scan of
       // the same folder; reset only when the source actually changed.
-      if (state.sourceRoot !== previousSource) state.ratios = defaultRatios();
-      // FS-10: adjacent-project listings and the redundancy banner described
-      // the previous source only.
-      if (state.sourceRoot !== previousSource) state.redundantRoots = [];
+      if (state.sourceRoot !== previousSource) {
+        state.ratios = defaultRatios();
+        state.redundantRoots = [];
+        resetVideoScanState();
+      }
       recordRecentSource(state.sourceRoot);
       savePersistedSettings({
         sourceRoot: state.sourceRoot,
@@ -822,14 +830,16 @@ async function handleApi(pathname: string, req: Request, url: URL): Promise<Resp
         magick.path, subset.map((d) => d.file.abs), 8, req.signal,
       );
       const report = buildDateReport(facts);
-      state.dates = report;
+      const absToRel = new Map(subset.map((d) => [d.file.abs, d.file.rel]));
+      const undatedRel = report.undated.map((p) => absToRel.get(p) ?? path.relative(state.sourceRoot, p));
+      state.dates = { ...report, undated: undatedRel };
       return json({
         ...report,
         scanned: facts.length,
         inScope: all.length,
         truncated: all.length > subset.length,
         omitted: all.length - subset.length,
-        undated: report.undated.slice(0, 500),
+        undated: undatedRel.slice(0, 500),
       });
     });
   }
@@ -907,10 +917,10 @@ async function handleApi(pathname: string, req: Request, url: URL): Promise<Resp
   if (route === "imagemagick/install" && req.method === "POST") {
     // Replacing the binaries under running encoders is not safe on Windows.
     const live = liveJob();
-    if (live) {
+    if (live || isRunStarting()) {
       throw new HttpError(
         409,
-        live.state === "paused"
+        live?.state === "paused"
           ? "A conversion is paused. Resume or cancel it before updating ImageMagick."
           : "A conversion is running. Pause or cancel it before updating ImageMagick.",
       );
@@ -1023,7 +1033,13 @@ async function handleApi(pathname: string, req: Request, url: URL): Promise<Resp
       );
     }
 
-    const qualities = (body.qualities ?? spec.compareQualities).slice(0, 6);
+    const rawQualities = Array.isArray(body.qualities) ? body.qualities : spec.compareQualities;
+    const cleanQualities = [...new Set(
+      rawQualities
+        .map((q) => Math.round(Number(q)))
+        .filter((q) => Number.isFinite(q) && q >= spec.quality.min && q <= spec.quality.max),
+    )].slice(0, 6);
+    const qualities = cleanQualities.length > 0 ? cleanQualities : spec.compareQualities.slice(0, 6);
     // Fixed location. This previously took a destination from the request
     // body, which let a caller direct writes anywhere on the machine.
     const outDir = previewCacheDir;
@@ -1155,7 +1171,7 @@ async function handleApi(pathname: string, req: Request, url: URL): Promise<Resp
       return new Response(Bun.file(file.abs), {
         headers: {
           "content-type": IMAGE_MIME[ext] ?? "image/jpeg",
-          "content-length": String(file.size),
+          "x-content-type-options": "nosniff",
           "cache-control": "no-store",
         },
       });
@@ -1477,29 +1493,44 @@ async function handleApi(pathname: string, req: Request, url: URL): Promise<Resp
     let ping: ReturnType<typeof setInterval> | null = null;
     let detach: (() => void) | null = null;
 
+    const cleanup = () => {
+      detach?.();
+      detach = null;
+      if (ping) {
+        clearInterval(ping);
+        ping = null;
+      }
+    };
+
     const stream = new ReadableStream({
       start(controller) {
         const send = (p: unknown) => {
           try {
             controller.enqueue(encoder.encode(`data: ${JSON.stringify(p, jsonReplacer)}\n\n`));
-          } catch { /* client went away */ }
+          } catch {
+            cleanup();
+          }
         };
         send({ type: "hello", jobId: job.id, state: job.state });
         if (job.lastTerminalEvent) {
           send(job.lastTerminalEvent);
+          controller.close();
+          return;
+        }
+        if (job.state === "done" || job.state === "cancelled" || job.state === "failed") {
+          controller.close();
           return;
         }
         job.on("progress", send);
         ping = setInterval(() => {
-          try { controller.enqueue(encoder.encode(": ping\n\n")); } catch { /* ignore */ }
+          try { controller.enqueue(encoder.encode(": ping\n\n")); } catch { cleanup(); }
         }, 15_000);
         // Drop the listener when the stream ends. Without this, every page
         // refresh left another listener holding a dead response.
         detach = () => { job.off("progress", send); };
       },
       cancel() {
-        detach?.();
-        if (ping) clearInterval(ping);
+        cleanup();
       },
     });
 
@@ -1538,7 +1569,7 @@ async function handleApi(pathname: string, req: Request, url: URL): Promise<Resp
     if (job.state !== "paused") {
       throw new HttpError(409, `Cannot resume from "${job.state}".`);
     }
-    void job.resume();
+    void job.resume().catch((err) => console.error("[server] photo resume failed:", err));
     return json({ ok: true, state: job.state, total: job.progress().total });
   }
 
@@ -1663,6 +1694,9 @@ async function handleApi(pathname: string, req: Request, url: URL): Promise<Resp
   }
 
   if (route === "undo" && req.method === "POST") {
+    if (liveJob() || isRunStarting()) {
+      throw new HttpError(409, "Cannot undo while a conversion is running or paused.");
+    }
     const body = await readBody<{ id: string; dryRun?: boolean }>(req);
     const list = await manifestsFor(state.destination);
     const manifest = list.find((m) => m.id === body.id);
@@ -1690,7 +1724,7 @@ async function handleApi(pathname: string, req: Request, url: URL): Promise<Resp
         throw new HttpError(400, "Requested folder is outside the configured destination.");
       }
     }
-    if (!existsSync(target)) {
+    if (!(await dirExists(target))) {
       throw new HttpError(404, `Destination directory does not exist on disk: ${target}`);
     }
     const ok = openPathInOs(target);
@@ -1723,10 +1757,11 @@ function hashRel(rel: string): string {
 
 /** PowerShell FolderBrowserDialog - gives a real native picker with no extra deps. */
 function powershellFolderPicker(title: string): Promise<string | null> {
+  const safeTitle = String(title ?? "Choose a folder").replace(/[\r\n\0]/g, " ").slice(0, 120);
   const ps = `
 Add-Type -AssemblyName System.Windows.Forms
 $d = New-Object System.Windows.Forms.FolderBrowserDialog
-$d.Description = '${title.replace(/'/g, "''")}'
+$d.Description = $env:COMPAKTA_PICK_TITLE
 $d.ShowNewFolderButton = $true
 if ($d.ShowDialog() -eq 'OK') { Write-Output $d.SelectedPath }
 $d.Dispose()
@@ -1734,6 +1769,8 @@ $d.Dispose()
   return new Promise((resolve) => {
     const c = spawn("powershell.exe", ["-NoProfile", "-STA", "-Command", ps], {
       windowsHide: true,
+      stdio: ["ignore", "pipe", "ignore"],
+      env: { ...process.env, COMPAKTA_PICK_TITLE: safeTitle },
     });
     let out = "";
     c.stdout.on("data", (d) => { out += String(d); });

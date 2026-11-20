@@ -1708,6 +1708,7 @@ function createRunLifecycle(options) {
       finish(event);
       return;
     } else if (event.type === "error") {
+      document.title = "Compakta";
       state.es?.close();
       state.es = null;
       state.currentJob = null;
@@ -1829,7 +1830,8 @@ function createRunLifecycle(options) {
       }
     }
     state.starting = false;
-    state.running = true;
+    if (!replay)
+      state.running = true;
     stream(jobId);
     render();
   };
@@ -3452,7 +3454,7 @@ function createRunView(actions) {
   }
   if (btnCopyFailed) {
     btnCopyFailed.addEventListener("click", () => {
-      const failed = state.activity.filter((f) => f.status === "failed");
+      const failed = state.failedActivity;
       if (!failed.length) {
         actions.toast("No failed files to copy.");
         return;
@@ -3524,7 +3526,7 @@ function createRunView(actions) {
     lastDockState = r.state;
   };
   const activityHtml = () => {
-    const list = showFailedOnly ? state.activity.filter((f) => f.status === "failed") : state.activity;
+    const list = showFailedOnly ? state.failedActivity : state.activity;
     if (!list.length) {
       return `<p class="empty-note" style="padding:14px">${showFailedOnly ? "No failed files recorded." : "Results appear here as files finish."}</p>`;
     }

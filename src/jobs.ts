@@ -137,8 +137,13 @@ export class Job extends EventEmitter {
     return this.liveCpuLimit;
   }
 
+  private totalElapsedSeconds(): number {
+    const activeMs = this.state === "running" && this.started > 0 ? Date.now() - this.started : 0;
+    return (this.elapsedBeforePauseMs + activeMs) / 1000;
+  }
+
   private emitProgress(file?: FileResult, starting?: { rel: string; bytes: number }) {
-    const elapsed = (this.elapsedBeforePauseMs + (Date.now() - this.started)) / 1000;
+    const elapsed = this.totalElapsedSeconds();
     // Average service time across finished files, scaled by remaining work.
     const avg = this.done > 0 ? elapsed / this.done : 0;
     const remaining = Math.max(0, this.total - this.done);
@@ -293,7 +298,7 @@ private total = 0;
       bytes,
       inBytes: this.totals.inBytes,
       remaining: this.total - this.done,
-      elapsedSeconds: Math.round((this.elapsedBeforePauseMs + (Date.now() - this.started)) / 1000),
+      elapsedSeconds: Math.round(this.totalElapsedSeconds()),
       note,
     };
   }
@@ -344,10 +349,10 @@ private total = 0;
         },
         onResult: (r) => {
           this.inFlight--;
-          this.finished.add(r.rel);
-          this.totals.bytes += r.outBytes;
-          this.totals.inBytes += r.inBytes;
           if (r.status !== "cancelled") {
+            this.finished.add(r.rel);
+            this.totals.bytes += r.outBytes;
+            this.totals.inBytes += r.inBytes;
             this.done++;
             this.totals[r.status === "converted" ? "converted"
               : r.status === "copied" ? "copied"
@@ -361,7 +366,10 @@ private total = 0;
 
       // A pause is not a finished run, so no manifest is written yet.
       if (this.pauseRequested && !this.controller.signal.aborted && this.done < this.total) {
-        this.elapsedBeforePauseMs += Date.now() - this.started;
+        if (this.started > 0) {
+          this.elapsedBeforePauseMs += Date.now() - this.started;
+          this.started = 0;
+        }
         this.state = "paused";
         this.results = [...this.results, ...result.results];
         this.emit("progress", {
@@ -376,6 +384,11 @@ private total = 0;
             `Resume picks up from here.`,
         } satisfies Progress);
         return;
+      }
+
+      if (this.started > 0) {
+        this.elapsedBeforePauseMs += Date.now() - this.started;
+        this.started = 0;
       }
 
       const cancelled = this.controller.signal.aborted;

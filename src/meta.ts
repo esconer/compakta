@@ -36,7 +36,7 @@ const PROBE_FIELDS = [
   { key: "depth", expr: "%z" },
   { key: "colorspace", expr: "%[colorspace]" },
   { key: "orientation", expr: "%[orientation]" },
-  { key: "filesize", expr: "%b" },
+  { key: "filesize", expr: "%B" },
   { key: "dateOriginal", expr: "%[EXIF:DateTimeOriginal]" },
   { key: "make", expr: "%[EXIF:Make]" },
   { key: "model", expr: "%[EXIF:Model]" },
@@ -170,7 +170,7 @@ export type DateReport = {
  * tally. The field still counts towards withExif - it IS present in the file.
  */
 const EXIF_DATE_HEAD = /^(\d{4})[:\-](\d{2})[:\-](\d{2})/;
-function exifDateYear(when: string): string | null {
+export function exifDateYear(when: string): string | null {
   const m = EXIF_DATE_HEAD.exec(when);
   if (!m) return null;
   const year = +m[1], month = +m[2], day = +m[3];

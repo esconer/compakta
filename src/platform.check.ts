@@ -20,12 +20,13 @@ import { applyPolicy, DEFAULT_POLICY, outputPathFor, type Decision } from "./pol
 import type { ScanResult, ScannedFile } from "./scan.ts";
 import { undoManifest, type Manifest } from "./manifest.ts";
 import { analyseSync } from "./sync.ts";
-import { isAppImage } from "./paths.ts";
+import { assertDestinationSafe, isAppImage } from "./paths.ts";
 import {
   IMAGEMAGICK_ROOT, isManagedInstall, isTrustedReleaseUrl,
   pickAppImageAsset, pickPortableAsset,
 } from "./imagemagick.ts";
 import { pickLeanAppAsset } from "./app-update.ts";
+import { runHealthCheck } from "./health.ts";
 import { migrateLegacyData } from "./migration.ts";
 import { calculateAffinityMask, applyProcessCpuLimit, suspendProcess, resumeProcess } from "./cpu.ts";
 import { spawn } from "node:child_process";
@@ -571,6 +572,48 @@ await check("migrateLegacyData refuses toolchain binaries that fail the -version
 async function existsSafe(p: string): Promise<boolean> {
   try { await access(p); return true; } catch { return false; }
 }
+
+await check("runHealthCheck fails (not warns) when destination is an existing file", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "compakta-health-"));
+  try {
+    const srcDir = path.join(root, "src");
+    const destFile = path.join(root, "not-a-dir");
+    await mkdir(srcDir, { recursive: true });
+    await writeFile(destFile, "blocking-file");
+
+    const report = await runHealthCheck(srcDir, destFile, 1024, "avif");
+    const destCheck = report.checks.find((c) => c.id === "dest");
+    assert.ok(destCheck);
+    assert.equal(destCheck.status, "fail");
+    assert.equal(report.canRun, false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+await check("assertDestinationSafe rejects relative paths and nested destinations", () => {
+  const src = path.resolve(tmpdir(), "compakta-src-safe-test");
+  assert.throws(() => assertDestinationSafe(src, "relative-out"), /absolute path/i);
+  assert.throws(() => assertDestinationSafe(src, path.join(src, "nested")), /inside the source/i);
+  assert.doesNotThrow(() => assertDestinationSafe(src, `${src}-out`));
+});
+
+await check("runHealthCheck fails when destination is inside source", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "compakta-health-safe-"));
+  try {
+    const srcDir = path.join(root, "src");
+    const nestedDest = path.join(srcDir, "out");
+    await mkdir(srcDir, { recursive: true });
+
+    const report = await runHealthCheck(srcDir, nestedDest, 1024, "avif");
+    const safeCheck = report.checks.find((c) => c.id === "dest-safe");
+    assert.ok(safeCheck);
+    assert.equal(safeCheck.status, "fail");
+    assert.equal(report.canRun, false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 console.log(failures ? `\n${failures} platform check(s) failed` : "\nplatform OK");
 if (failures) process.exit(1);

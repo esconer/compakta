@@ -17,7 +17,7 @@ import { chmod, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "no
 import path from "node:path";
 
 import { IS_LINUX, IS_WINDOWS, pathKey } from "./platform.ts";
-import { findMagick, invalidateMagickCache, type MagickInfo } from "./paths.ts";
+import { findMagick, invalidateMagickCache, parseFormatSupport, type MagickInfo } from "./paths.ts";
 import { compareVersions, isNewerVersion, parseVersion } from "./version.ts";
 import { MAGICK_DIR, BUNDLED_MAGICK_DIR } from "./appdirs.ts";
 
@@ -103,7 +103,8 @@ export type InstallResult = {
   integrityNote: string | null;
 };
 
-const port = (arch: string) => (arch === "arm64" ? "arm64" : "x64");
+const port = (arch: string): "arm64" | "x64" | null =>
+  arch === "arm64" ? "arm64" : arch === "x64" ? "x64" : null;
 
 let cached: { at: number; release: LatestRelease } | null = null;
 
@@ -169,8 +170,9 @@ export function rateLimitMessage(status: number, statusText: string, headers: He
  */
 export function pickPortableAsset(
   assets: Array<{ name?: unknown; size?: unknown; browser_download_url?: unknown; digest?: unknown }>,
-  arch = port(process.arch),
+  arch: string | null = port(process.arch),
 ): PortableAsset | null {
+  if (!arch) return null;
   const suffix = `-portable-Q16-${arch}.7z`;
   for (const a of assets) {
     if (typeof a.name !== "string" || typeof a.browser_download_url !== "string") continue;
@@ -366,7 +368,9 @@ async function doFetchLatestRelease(force = false): Promise<LatestRelease> {
       }
       throw new Error(`Release ${version} has no official x86_64 AppImage asset.`);
     }
-    throw new Error(`Release ${version} has no portable Q16 build for this CPU (${port(process.arch)}).`);
+    throw new Error(
+      `Release ${version} has no portable Q16 build for this CPU (${port(process.arch) ?? process.arch}).`,
+    );
   }
   const { asset, kind } = picked;
   if (!isTrustedReleaseUrl(asset.url)) {
@@ -417,7 +421,7 @@ export async function checkForUpdate(opts: {
       }
     : null;
   const managed = isManagedInstall(installed?.path);
-  const supported = IS_WINDOWS || (IS_LINUX && process.arch === "x64");
+  const supported = (IS_WINDOWS && port(process.arch) !== null) || (IS_LINUX && process.arch === "x64");
 
   if (!supported) {
     return {
@@ -516,8 +520,12 @@ export async function installLatest(): Promise<InstallResult> {
   let release: LatestRelease;
   let arch: string;
   try {
+    const detectedArch = port(process.arch);
+    if (!detectedArch) {
+      throw new Error(`Automatic portable installs are only supported on x64 and arm64 Windows, not ${process.arch}.`);
+    }
+    arch = detectedArch;
     release = await fetchLatestRelease(true);
-    arch = port(process.arch);
     if (!isTrustedReleaseUrl(release.asset.url)) {
       throw new Error("Refusing to download ImageMagick from an untrusted URL.");
     }
@@ -627,7 +635,6 @@ export async function installLatest(): Promise<InstallResult> {
     } catch (err) {
       // The build is usable even if the pointer file cannot be written; the
       // versioned folder is still discovered by name.
-      if (backup) await rm(backup, { recursive: true, force: true }).catch(() => {});
       console.warn(`ImageMagick installed, but its pointer file was not written: ${errorText(err)}`);
     }
 
@@ -772,10 +779,9 @@ async function verifyAppImage(file: string, expected: string): Promise<void> {
     throw new Error(`Downloaded AppImage reports "${reported.trim()}", expected ${expected}.`);
   }
 
-  const avifLine = formats.split(/\r?\n/).find((l) => /^\s*AVIF\s/.test(l));
-  const mode = avifLine?.trim().split(/\s+/)[1] ?? "";
-  if (!/w/.test(mode)) {
-    throw new Error(`The downloaded AppImage cannot write AVIF (AVIF mode "${mode || "missing"}).`);
+  const avif = parseFormatSupport(formats).avif;
+  if (!avif.writable) {
+    throw new Error(`The downloaded AppImage cannot write AVIF (AVIF mode "${avif.mode || "missing"}").`);
   }
 }
 
@@ -1071,6 +1077,7 @@ async function downloadAssetOnce(
       }
       await sink.end();
     } catch (err) {
+      try { await reader.cancel(); } catch { /* already failing */ }
       try { await sink.end(); } catch { /* already failing */ }
       if (abortReason) throw new Error(`Download failed — ${abortReason}.`);
       throw new Error(`Download was interrupted (${errorText(err)}).`);
@@ -1145,6 +1152,9 @@ async function extractArchive(archive: string, dest: string): Promise<void> {
   let lastError = "";
   for (const { cmd, args } of extractionCommands(archive, dest)) {
     try {
+      // Clear any partial files from a previous failed extractor before retrying.
+      await rm(dest, { recursive: true, force: true });
+      await mkdir(dest, { recursive: true });
       await runCapture(cmd, args, { timeoutMs: 5 * 60_000 });
       return;
     } catch (err) {
@@ -1190,10 +1200,9 @@ async function verifyStagedMagick(exe: string, expected: string): Promise<void> 
     throw new Error(`Downloaded build reports "${reported.trim()}", expected ${expected}.`);
   }
 
-  const avifLine = formats.split(/\r?\n/).find((l) => /^\s*AVIF\s/.test(l));
-  const mode = avifLine?.trim().split(/\s+/)[1] ?? "";
-  if (!/w/.test(mode)) {
-    throw new Error(`The downloaded build cannot write AVIF (AVIF mode "${mode || "missing"}").`);
+  const avif = parseFormatSupport(formats).avif;
+  if (!avif.writable) {
+    throw new Error(`The downloaded build cannot write AVIF (AVIF mode "${avif.mode || "missing"}").`);
   }
 }
 

@@ -112,7 +112,10 @@ function versionProbe(exe: string, expect: RegExp): Promise<boolean> {
     // the integrity note.
     let c: ChildProcess | undefined;
     try {
-      c = spawn(exe, ["-version"], { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+      const env = /\.appimage$/i.test(exe)
+        ? { ...process.env, APPIMAGE_EXTRACT_AND_RUN: "1" }
+        : process.env;
+      c = spawn(exe, ["-version"], { windowsHide: true, stdio: ["ignore", "pipe", "pipe"], env });
     } catch {
       done(false);
       return;
@@ -145,17 +148,25 @@ function versionProbe(exe: string, expect: RegExp): Promise<boolean> {
  * is bounded so an arbitrary legacy tree cannot turn boot migration into a
  * deep unbounded walk.
  */
-async function findBinaryAt(dir: string, re: RegExp): Promise<string | null> {
+async function findBinariesAt(dir: string, re: RegExp): Promise<string[]> {
   const MAX_DEPTH = 3;
+  const found: string[] = [];
+  const seenFiles = new Set<string>();
 
-  const filesIn = async (d: string): Promise<string | null> => {
+  const pushFilesIn = async (d: string): Promise<void> => {
     let list;
-    try { list = await readdir(d, { withFileTypes: true }); } catch { return null; }
+    try { list = await readdir(d, { withFileTypes: true }); } catch { return; }
     list.sort((a, b) => a.name.localeCompare(b.name));
     for (const e of list) {
-      if (e.isFile() && re.test(e.name)) return path.join(d, e.name);
+      if (e.isFile() && re.test(e.name)) {
+        const full = path.join(d, e.name);
+        const key = pathKey(path.resolve(full));
+        if (!seenFiles.has(key)) {
+          seenFiles.add(key);
+          found.push(full);
+        }
+      }
     }
-    return null;
   };
 
   // 1. current.txt pointer - the folder findMagick tries first.
@@ -164,10 +175,11 @@ async function findBinaryAt(dir: string, re: RegExp): Promise<string | null> {
     const pointer = raw.replace(/^["']|["']$/g, "");
     if (pointer && !path.isAbsolute(pointer)) {
       const target = path.resolve(dir, pointer);
+      const dirKey = pathKey(path.resolve(dir));
+      const dirPrefix = dirKey.endsWith(path.sep) ? dirKey : dirKey + path.sep;
       // current.txt is app-written, but never let it point outside the folder.
-      if (pathKey(target).startsWith(pathKey(dir) + path.sep)) {
-        const hit = await filesIn(target);
-        if (hit) return hit;
+      if (pathKey(target).startsWith(dirPrefix)) {
+        await pushFilesIn(target);
       }
     }
   } catch { /* no pointer (or unreadable) - fall through to the normal scan */ }
@@ -181,7 +193,14 @@ async function findBinaryAt(dir: string, re: RegExp): Promise<string | null> {
     try { list = await readdir(here, { withFileTypes: true }); } catch { continue; }
     list.sort((a, b) => a.name.localeCompare(b.name));
     for (const e of list) {
-      if (e.isFile() && re.test(e.name)) return path.join(here, e.name);
+      if (e.isFile() && re.test(e.name)) {
+        const full = path.join(here, e.name);
+        const key = pathKey(path.resolve(full));
+        if (!seenFiles.has(key)) {
+          seenFiles.add(key);
+          found.push(full);
+        }
+      }
     }
     if (depth >= MAX_DEPTH) continue;
     const folders = list.filter((e) => e.isDirectory()).map((e) => e.name);
@@ -195,7 +214,7 @@ async function findBinaryAt(dir: string, re: RegExp): Promise<string | null> {
       queue.push({ dir: sub, depth: depth + 1 });
     }
   }
-  return null;
+  return found;
 }
 
 async function dirNonEmpty(dir: string): Promise<boolean> {
@@ -231,17 +250,19 @@ async function migrateToolchain(
     console.log(`[compakta] Migrated ${label} from ${legacyDir} -> ${targetDir} (integrity check bypassed)`);
     return "migrated";
   }
-  const binary = await findBinaryAt(legacyDir, binaryName);
-  if (!binary) {
+  const binaries = await findBinariesAt(legacyDir, binaryName);
+  if (binaries.length === 0) {
     return `${label}: no ${binaryLabel} inside ${legacyDir} - skipped (integrity check)`;
   }
-  if (!(await versionProbe(binary, banner))) {
-    return `${label}: binary at ${binary} failed the ${label} -version check - skipped (integrity check)`;
+  for (const binary of binaries) {
+    if (await versionProbe(binary, banner)) {
+      await mkdir(targetDir, { recursive: true });
+      await cp(legacyDir, targetDir, { recursive: true });
+      console.log(`[compakta] Migrated ${label} from ${legacyDir} -> ${targetDir}`);
+      return "migrated";
+    }
   }
-  await mkdir(targetDir, { recursive: true });
-  await cp(legacyDir, targetDir, { recursive: true });
-  console.log(`[compakta] Migrated ${label} from ${legacyDir} -> ${targetDir}`);
-  return "migrated";
+  return `${label}: binary at ${binaries[0]} failed the ${label} -version check - skipped (integrity check)`;
 }
 
 // MIG-2: share one migration run between concurrent callers instead of
@@ -289,8 +310,8 @@ async function migrateLegacyDataInner(
       const result = await migrateToolchain(
         path.join(candidate, "imagemagick"),
         path.join(targetDir, "imagemagick"),
-        /^magick\d*(\.exe)?$/i,
-        "magick[0-9]*(.exe)?",
+        /^(?:magick\d*(?:\.exe)?|ImageMagick.*\.AppImage)$/i,
+        "magick[0-9]*(.exe)? or ImageMagick*.AppImage",
         /ImageMagick/i,
         "ImageMagick",
         integrityCheck,

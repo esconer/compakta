@@ -184,6 +184,7 @@ export function createRunLifecycle(options: RunLifecycleOptions): RunLifecycle {
       finish(event);
       return;
     } else if (event.type === "error") {
+      document.title = "Compakta";
       state.es?.close();
       state.es = null;
       state.currentJob = null;
@@ -309,7 +310,7 @@ export function createRunLifecycle(options: RunLifecycleOptions): RunLifecycle {
       }
     }
     state.starting = false;
-    state.running = true;
+    if (!replay) state.running = true;
     stream(jobId);
     render();
   };

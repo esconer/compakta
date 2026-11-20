@@ -61,16 +61,20 @@ export async function verifyOutputs(
       if (st.size === 0) problems.push("output is empty");
       // Copied files are byte-identical by construction; only conversions need decoding.
       if (converted) {
-        [src, out] = await Promise.all([identify(magickPath, r.src), identify(magickPath, r.out!)]);
+        [src, out] = await Promise.all([
+          identify(magickPath, r.src, opts.signal),
+          identify(magickPath, r.out!, opts.signal),
+        ]);
       } else {
-        out = await identify(magickPath, r.out!);
+        out = await identify(magickPath, r.out!, opts.signal);
       }
     } catch (err) {
       problems.push((err as Error).message.slice(0, 120));
     }
 
+    if (converted && src && !src.ok) problems.push(`cannot decode source: ${src.error ?? "unknown"}`);
     if (out && !out.ok) problems.push(`cannot decode: ${out.error ?? "unknown"}`);
-    if (out?.width !== undefined && out?.height !== undefined && (out.width === 0 || out.height === 0)) {
+    if (out?.ok && (!out.width || !out.height)) {
       problems.push("zero dimensions");
     }
 
@@ -102,14 +106,14 @@ export async function verifyOutputs(
         const tag = `[variant ${path.basename(v.out)}]`;
         let facts: ImageFacts | undefined;
         try {
-          facts = await identify(magickPath, v.out);
+          facts = await identify(magickPath, v.out, opts.signal);
         } catch (err) {
           problems.push(`${tag} probe failed: ${(err as Error).message.slice(0, 100)}`);
           continue;
         }
         if (!facts.ok) problems.push(`${tag} cannot decode: ${facts.error ?? "unknown"}`);
         else {
-          if ((facts.width !== undefined && facts.width === 0) || (facts.height !== undefined && facts.height === 0)) {
+          if (!facts.width || !facts.height) {
             problems.push(`${tag} zero dimensions`);
           }
           if (expectedWidth && facts.width && expectedWidth !== facts.width) {

@@ -16,7 +16,7 @@ import { formatBytes } from "../convert.ts";
 import { findDuplicates } from "../dedupe.ts";
 import { liveJob, manifestsFor, undoManifest } from "../jobs.ts";
 import type { Manifest } from "../manifest.ts";
-import { assertDestinationSafe, ensureDir, freeSpace } from "../paths.ts";
+import { assertDestinationSafe, dirExists, ensureDir, freeSpace } from "../paths.ts";
 import { applyPolicy, type Policy } from "../policy.ts";
 import type { ScannedFile, ScanResult } from "../scan.ts";
 import { estimateVideoFromSample } from "./estimate.ts";
@@ -53,6 +53,7 @@ import {
 import {
   applyVideoPolicy,
   DEFAULT_VIDEO_POLICY,
+  defaultVideoDestination,
   normaliseVideoPolicy,
   resolveVideoDestination,
   type VideoPolicy,
@@ -61,7 +62,7 @@ import {
 import { analyseVideoSync, pendingVideoOnly } from "./sync.ts";
 import { cleanOrphans } from "../sync.ts";
 import { loadPersistedSettings, savePersistedSettings } from "../settings.ts";
-import { clampInt, openPathInOs, readBody, singleLine, withBusy } from "../server.ts";
+import { clampInt, isRunStarting, openPathInOs, readBody, singleLine, withBusy } from "../server.ts";
 
 export type SharedServerBridge = {
   getSourceRoot: () => string;
@@ -113,7 +114,13 @@ export function resetVideoScanState(): void {
 }
 
 function requireFfmpeg(): FfmpegInfo {
-  if (!vState.ffmpeg) vState.ffmpeg = findFfmpeg();
+  if (!vState.ffmpeg) {
+    try {
+      vState.ffmpeg = findFfmpeg();
+    } catch (err) {
+      throw Object.assign(new Error(singleLine((err as Error).message)), { status: 400 });
+    }
+  }
   return vState.ffmpeg;
 }
 
@@ -219,7 +226,7 @@ export async function handleVideoApi(
       photoDestination: bridge.getPhotoDestination(),
       customDestination:
         vState.customDestination ||
-        `${bridge.getSourceRoot().replace(/[\\/]+$/, "")}-${VIDEO_FORMAT_SPECS[vState.policy.outputFormat].destinationSuffix}`,
+        defaultVideoDestination(bridge.getSourceRoot(), vState.policy.outputFormat),
       effectiveDestination: resolvedDest,
       budgetBytes: bridge.getBudgetBytes(),
       ratio: vState.ratios[vState.policy.outputFormat],
@@ -304,11 +311,12 @@ export async function handleVideoApi(
       ? mergeVideoPolicyUpdate(vState.policy, body.policy)
       : vState.policy;
     const rawDest = (body.customDestination || body.destination)?.trim();
-    const destTakesCustom = Boolean(rawDest) && !body.policy?.destMode;
-    const candidatePolicy: VideoPolicy = destTakesCustom
+    const hasRawDest = Boolean(rawDest);
+    const forceCustomMode = hasRawDest && !body.policy?.destMode;
+    const candidatePolicy: VideoPolicy = forceCustomMode
       ? { ...policyAfter, destMode: "custom" }
       : policyAfter;
-    const candidateCustom = destTakesCustom ? rawDest! : vState.customDestination;
+    const candidateCustom = hasRawDest ? rawDest! : vState.customDestination;
     safeDest(
       bridge.getSourceRoot(),
       resolveVideoDestination(
@@ -322,8 +330,10 @@ export async function handleVideoApi(
     if (body.policy) {
       vState.policy = policyAfter;
     }
-    if (destTakesCustom) {
+    if (hasRawDest) {
       vState.customDestination = rawDest!;
+    }
+    if (forceCustomMode) {
       vState.policy.destMode = "custom";
     }
 
@@ -377,7 +387,17 @@ export async function handleVideoApi(
 
     const body = await readBody<{ sampleSize?: number; policy?: Partial<VideoPolicy> }>(req);
     if (body.policy) {
-      vState.policy = mergeVideoPolicyUpdate(vState.policy, body.policy);
+      const candidatePolicy = mergeVideoPolicyUpdate(vState.policy, body.policy);
+      safeDest(
+        bridge.getSourceRoot(),
+        resolveVideoDestination(
+          bridge.getSourceRoot(),
+          bridge.getPhotoDestination(),
+          vState.customDestination,
+          candidatePolicy,
+        ),
+      );
+      vState.policy = candidatePolicy;
     }
 
     // FS-05: the sample walk re-encodes slices with ffmpeg; refuse overlap.
@@ -417,11 +437,12 @@ export async function handleVideoApi(
       ? mergeVideoPolicyUpdate(vState.policy, body.policy)
       : vState.policy;
     const rawDest = (body.customDestination || body.destination)?.trim();
-    const destTakesCustom = Boolean(rawDest) && !body.policy?.destMode;
-    const candidatePolicy: VideoPolicy = destTakesCustom
+    const hasRawDest = Boolean(rawDest);
+    const forceCustomMode = hasRawDest && !body.policy?.destMode;
+    const candidatePolicy: VideoPolicy = forceCustomMode
       ? { ...policyAfter, destMode: "custom" }
       : policyAfter;
-    const candidateCustom = destTakesCustom ? rawDest! : vState.customDestination;
+    const candidateCustom = hasRawDest ? rawDest! : vState.customDestination;
     safeDest(
       bridge.getSourceRoot(),
       resolveVideoDestination(
@@ -435,8 +456,10 @@ export async function handleVideoApi(
     if (body.policy) {
       vState.policy = policyAfter;
     }
-    if (destTakesCustom) {
+    if (hasRawDest) {
       vState.customDestination = rawDest!;
+    }
+    if (forceCustomMode) {
       vState.policy.destMode = "custom";
     }
 
@@ -584,6 +607,10 @@ export async function handleVideoApi(
         req.signal,
       );
       const report = buildVideoDateReport(facts);
+      const absToRel = new Map(subset.map((d) => [d.file.abs, d.file.rel]));
+      const undatedRel = report.undated.map(
+        (p) => absToRel.get(p) ?? path.relative(bridge.getSourceRoot(), p),
+      );
 
       return json({
         ...report,
@@ -591,7 +618,7 @@ export async function handleVideoApi(
         inScope: all.length,
         truncated: all.length > subset.length,
         omitted: all.length - subset.length,
-        undated: report.undated.slice(0, 500),
+        undated: undatedRel.slice(0, 500),
       });
     });
   }
@@ -641,7 +668,17 @@ export async function handleVideoApi(
       throw new Error("Could not extract sample frame from original video.");
     }
 
-    const qualities = (body.qualities ?? spec.compareQualities).slice(0, 5);
+    const rawQualities = Array.isArray(body.qualities) ? body.qualities : spec.compareQualities;
+    const qualities = [
+      ...new Set(
+        rawQualities
+          .map((q) => Math.round(Number(q)))
+          .filter((q) => Number.isFinite(q) && q >= spec.quality.min && q <= spec.quality.max),
+      ),
+    ].slice(0, 5);
+    if (!qualities.length) {
+      throw Object.assign(new Error("No valid video qualities supplied."), { status: 400 });
+    }
     const variants: { quality: number; label: string; url: string; bytes: number }[] = [];
     const errors: string[] = [];
     let anyTimedOut = false;
@@ -809,9 +846,9 @@ export async function handleVideoApi(
   }
 
   if (subroute === "ffmpeg/install" && req.method === "POST") {
-    if (liveJob() || liveVideoJob()) {
+    if (liveJob() || liveVideoJob() || isRunStarting() || isVideoRunStarting()) {
       throw Object.assign(
-        new Error("A conversion is currently running or paused. Finish or cancel it first."),
+        new Error("A conversion is currently running, starting, or paused. Finish or cancel it first."),
         { status: 409 },
       );
     }
@@ -878,11 +915,12 @@ export async function handleVideoApi(
         ? mergeVideoPolicyUpdate(vState.policy, body.policy)
         : vState.policy;
       const rawDest = (body.customDestination || body.destination)?.trim();
-      const destTakesCustom = Boolean(rawDest) && !body.policy?.destMode;
-      const candidatePolicy: VideoPolicy = destTakesCustom
+      const hasRawDest = Boolean(rawDest);
+      const forceCustomMode = hasRawDest && !body.policy?.destMode;
+      const candidatePolicy: VideoPolicy = forceCustomMode
         ? { ...policyAfter, destMode: "custom" }
         : policyAfter;
-      const candidateCustom = destTakesCustom ? rawDest! : vState.customDestination;
+      const candidateCustom = hasRawDest ? rawDest! : vState.customDestination;
 
       const ff = requireFfmpeg();
       const support = ff.formats[candidatePolicy.outputFormat];
@@ -907,8 +945,10 @@ export async function handleVideoApi(
       if (body.policy) {
         vState.policy = policyAfter;
       }
-      if (destTakesCustom) {
+      if (hasRawDest) {
         vState.customDestination = candidateCustom;
+      }
+      if (forceCustomMode) {
         vState.policy.destMode = "custom";
       }
 
@@ -957,7 +997,7 @@ export async function handleVideoApi(
         jobs,
         cpuLimit,
         overwrite: Boolean(body.overwrite),
-      });
+      }).catch((err) => console.error("[video] job start failed:", err));
 
       return json({
         jobId: job.id,
@@ -980,6 +1020,15 @@ export async function handleVideoApi(
     let ping: ReturnType<typeof setInterval> | null = null;
     let detach: (() => void) | null = null;
 
+    const cleanup = () => {
+      detach?.();
+      detach = null;
+      if (ping) {
+        clearInterval(ping);
+        ping = null;
+      }
+    };
+
     const stream = new ReadableStream({
       start(controller) {
         const send = (p: unknown) => {
@@ -988,12 +1037,17 @@ export async function handleVideoApi(
               encoder.encode(`data: ${JSON.stringify(p, jsonReplacer)}\n\n`),
             );
           } catch {
-            /* client disconnected */
+            cleanup();
           }
         };
         send({ type: "hello", jobId: job.id, state: job.state });
         if (job.lastTerminalEvent) {
           send(job.lastTerminalEvent);
+          controller.close();
+          return;
+        }
+        if (job.state === "done" || job.state === "cancelled" || job.state === "failed") {
+          controller.close();
           return;
         }
         job.on("progress", send);
@@ -1001,7 +1055,7 @@ export async function handleVideoApi(
           try {
             controller.enqueue(encoder.encode(": ping\n\n"));
           } catch {
-            /* ignore */
+            cleanup();
           }
         }, 15_000);
         detach = () => {
@@ -1009,8 +1063,7 @@ export async function handleVideoApi(
         };
       },
       cancel() {
-        detach?.();
-        if (ping) clearInterval(ping);
+        cleanup();
       },
     });
 
@@ -1052,7 +1105,7 @@ export async function handleVideoApi(
     if (job.state !== "paused") {
       throw Object.assign(new Error(`Cannot resume from "${job.state}".`), { status: 409 });
     }
-    void job.resume();
+    void job.resume().catch((err) => console.error("[video] resume failed:", err));
     return json({ ok: true, state: job.state, total: job.progress().total });
   }
 
@@ -1065,7 +1118,7 @@ export async function handleVideoApi(
   if (subroute.startsWith("cancel/") && req.method === "POST") {
     const job = getVideoJob(subroute.slice("cancel/".length));
     if (!job) throw Object.assign(new Error("Unknown video job."), { status: 404 });
-    job.cancel();
+    await job.cancel();
     return json({ ok: true, state: job.state });
   }
 
@@ -1113,6 +1166,12 @@ export async function handleVideoApi(
   }
 
   if (subroute === "undo" && req.method === "POST") {
+    if (liveVideoJob() || isVideoRunStarting()) {
+      throw Object.assign(
+        new Error("Cannot undo while a video conversion is running or paused."),
+        { status: 409 },
+      );
+    }
     const body = await readBody<{ id: string; dryRun?: boolean }>(req);
     const dest = effectiveDest(bridge);
     const list: Manifest[] = await manifestsFor(dest);
@@ -1141,7 +1200,7 @@ export async function handleVideoApi(
         );
       }
     }
-    if (!existsSync(target)) {
+    if (!(await dirExists(target))) {
       throw Object.assign(new Error(`Destination directory does not exist on disk: ${target}`), { status: 404 });
     }
     const ok = openPathInOs(target);
