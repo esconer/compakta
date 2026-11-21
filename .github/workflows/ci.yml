@@ -62,3 +62,44 @@ jobs:
       # Catch packaging breakage before a release tag is pushed.
       - name: Build desktop app
         run: bun run desktop:build
+
+      # Verify the documented "close the minimised window to stop the server"
+      # behaviour on a real Windows runner. start.bat is Windows-only, so this
+      # is the only way to exercise it; PORT is set explicitly so the probe and
+      # the server agree without touching the default 5178.
+      - name: Smoke test launcher close-to-stop (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:PORT = "5199"
+          $proc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "start.bat" -PassThru -WindowStyle Hidden
+          try {
+            $ready = $false
+            for ($i = 0; $i -lt 40; $i++) {
+              try {
+                $res = Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 "http://127.0.0.1:5199/api/status"
+                if ($res.StatusCode -eq 200) { $ready = $true; break }
+              } catch { }
+              Start-Sleep -Seconds 1
+            }
+            if (-not $ready) { throw "start.bat did not bring up the server on port 5199" }
+
+            $win = Get-Process -Name cmd -ErrorAction SilentlyContinue |
+              Where-Object { $_.MainWindowTitle -eq "Compakta" } | Select-Object -First 1
+            if (-not $win) { throw "Compakta server window not found" }
+            if (-not $win.CloseMainWindow()) { throw "Could not close the Compakta server window" }
+
+            $stopped = $false
+            for ($i = 0; $i -lt 30; $i++) {
+              $bun = Get-CimInstance Win32_Process -Filter "Name='bun.exe'" |
+                Where-Object { $_.CommandLine -like "*src\server.ts*" }
+              if (-not $bun) { $stopped = $true; break }
+              Start-Sleep -Milliseconds 500
+            }
+            if (-not $stopped) { throw "Server survived closing the Compakta window" }
+          } finally {
+            Get-CimInstance Win32_Process -Filter "Name='bun.exe'" |
+              Where-Object { $_.CommandLine -like "*src\server.ts*" } |
+              ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+          }

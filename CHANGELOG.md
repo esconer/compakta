@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- **Breaking (API):** `POST /api/sync/clean-orphans` and `POST /api/video/sync/clean-orphans` now require `{ "confirm": true }` and return `409` otherwise. The bundled client already sends it; direct API automation must be updated.
+- **Requirements:** source runs now require Bun 1.4 or newer (CI pins `bun-version: 1.4.x`). The desktop installers bundle their own Bun, so this only affects source users. This is an intentional floor, kept because all CI checks pass on 1.4.x with no regression.
+- **Install reliability:** `installLatest()` now claims its busy lock *before* the crash-leftover sweep, closing a race where two simultaneous requests could both enter the install flow. A platform check now fails if that lock ordering regresses.
+- **Launchers:** `start.bat` now resolves symlinks in the launcher path and forwards CLI arguments to the server (matching `start.sh`). CI smoke-tests that closing the minimised "Compakta" server window actually stops the server on Windows.
+
 ## 1.3.4 - 2026-11-16
 
 - High-Leverage Features & Quality-of-Life Upgrades:
