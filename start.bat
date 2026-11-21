@@ -3,7 +3,6 @@ REM One-click launcher for Compakta.
 REM Starts the server, waits for it to answer, then opens your browser.
 
 setlocal
-cd /d "%~dp0"
 
 where bun >nul 2>&1
 if errorlevel 1 (
@@ -15,6 +14,14 @@ if errorlevel 1 (
   exit /b 1
 )
 
+REM Resolve symlinks in the launcher path so a shortcut/symlink placed in
+REM another folder still finds the app beside the real script (start.sh parity).
+REM bun is already required above, so use its realpathSync; if resolution fails,
+REM fall back to the literal path instead of refusing to start.
+set "SELF=%~f0"
+for /f "usebackq delims=" %%P in (`bun -e "import('node:fs').then(function(fs){process.stdout.write(fs.realpathSync(process.argv[1]))}).catch(function(){})" "%SELF%" 2^>nul`) do set "SELF=%%P"
+for %%F in ("%SELF%") do cd /d "%%~dpF"
+
 echo Starting Compakta...
 echo.
 
@@ -22,7 +29,7 @@ REM Run detached so this window can close and the server keeps going. A cmd
 REM wrapper captures bun's output in .server.log / .server.err (both ignored)
 REM so a failed start can be diagnosed from this window below. Closing the
 REM minimised "Compakta" window still stops the server.
-start "Compakta" /min cmd /c "bun run src\server.ts > .server.log 2> .server.err"
+start "Compakta" /min cmd /c "bun run src\server.ts %* > .server.log 2> .server.err"
 
 REM Wait for the port to answer before opening a browser. A user-preset PORT
 REM is honoured; only when it is unset does the launcher assume the default.
