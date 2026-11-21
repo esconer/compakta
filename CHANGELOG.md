@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.3.5 - 2026-11-21
 
 - **Breaking (API):** `POST /api/sync/clean-orphans` and `POST /api/video/sync/clean-orphans` now require `{ "confirm": true }` and return `409` otherwise. The bundled client already sends it; direct API automation must be updated.
 - **Requirements:** source runs now require Bun 1.4 or newer (CI pins `bun-version: 1.4.x`). The desktop installers bundle their own Bun, so this only affects source users. This is an intentional floor, kept because all CI checks pass on 1.4.x with no regression.
