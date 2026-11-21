@@ -495,6 +495,18 @@ export async function checkForUpdate(opts: {
  */
 export async function installLatest(): Promise<InstallResult> {
   if (progress.running) throw new Error("An ImageMagick download is already in progress.");
+  // Claim the lock BEFORE the first await. The crash sweep below is async, so
+  // a lock set after it would let two simultaneous requests both pass the
+  // guard above and enter the install flow.
+  progress = {
+    running: true,
+    stage: "downloading",
+    message: "Preparing the ImageMagick install…",
+    percent: 0,
+    version: null,
+    error: null,
+  };
+
   // Finish the crash sweep before either install flow starts. The helper is
   // best-effort (1 h age guard, never throws), but awaiting it makes the
   // ordering deterministic; the catch is a defensive guard for future edits.
@@ -503,11 +515,19 @@ export async function installLatest(): Promise<InstallResult> {
   });
   if (IS_LINUX) return installLatestAppImage();
   if (!IS_WINDOWS) {
-    throw new Error("Automatic ImageMagick installs are only supported on Windows and x86_64 Linux.");
+    const message = "Automatic ImageMagick installs are only supported on Windows and x86_64 Linux.";
+    progress = {
+      running: false,
+      stage: "error",
+      message: "ImageMagick install failed.",
+      percent: 0,
+      version: null,
+      error: message,
+    };
+    throw new Error(message);
   }
 
-  // Claim the lock before the first await so two simultaneous requests cannot
-  // both start downloading.
+  // Refresh the already-claimed progress before the download begins.
   progress = {
     running: true,
     stage: "downloading",

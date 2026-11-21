@@ -22,8 +22,8 @@ import { undoManifest, type Manifest } from "./manifest.ts";
 import { analyseSync } from "./sync.ts";
 import { assertDestinationSafe, isAppImage } from "./paths.ts";
 import {
-  IMAGEMAGICK_ROOT, isManagedInstall, isTrustedReleaseUrl,
-  pickAppImageAsset, pickPortableAsset,
+  IMAGEMAGICK_ROOT, installLatest, isInstallInProgress, isManagedInstall,
+  isTrustedReleaseUrl, pickAppImageAsset, pickPortableAsset,
 } from "./imagemagick.ts";
 import { pickLeanAppAsset } from "./app-update.ts";
 import { runHealthCheck } from "./health.ts";
@@ -612,6 +612,29 @@ await check("runHealthCheck fails when destination is inside source", async () =
     assert.equal(report.canRun, false);
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+await check("installLatest claims its lock before the crash-sweep await", async () => {
+  // Stub the network so no install can proceed; only lock ordering is tested.
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    throw new Error("PROBE_NETWORK_STOP");
+  }) as unknown as typeof fetch;
+  try {
+    const first = installLatest().catch(() => undefined);
+    // The lock must be visible synchronously, before sweep/fetch can await.
+    assert.equal(isInstallInProgress(), true);
+    let secondRejected = false;
+    try {
+      await installLatest();
+    } catch (err) {
+      secondRejected = /already in progress/i.test(String(err));
+    }
+    assert.equal(secondRejected, true);
+    await first;
+  } finally {
+    globalThis.fetch = realFetch;
   }
 });
 
